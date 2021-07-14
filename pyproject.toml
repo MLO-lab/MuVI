@@ -1,0 +1,49 @@
+[build-system]
+requires = ["poetry_core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "spexlvm"
+version = "0.1.0"
+description = "Cookiecutter template for Python cli/packages"
+readme = "README.md"
+authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
+# license = "MIT"
+repository = "https://github.com/MLO-lab/spexlvm"
+homepage = "https://github.com/MLO-lab/spexlvm"
+
+# Pypi classifiers: https://pypi.org/classifiers/
+classifiers = []
+
+[tool.poetry.dependencies]
+black = {version = ">=20.8b1", optional = true}
+flake8 = {version = ">=3.9.2", optional = true}
+gsea-api = ">=0.3.4"
+h5py = ">=3.3.0"
+ipython = {version = ">=7.25", optional = true}
+isort = {version = ">=5.9", optional = true}
+jupyter = {version = ">=1.0", optional = true}
+numpy = ">=1.20"
+pandas = ">=1.0"
+pyro-ppl = ">=1.6.0"
+python = ">=3.8,<4.0"
+scikit-learn = ">=0.24"
+seaborn = ">=0.11"
+torch = ">=1.8.0"
+tqdm = ">=4.61.1"
+
+[tool.poetry.extras]
+dev = ["black", "flake8", "isort", "jupyter"]
+
+[tool.poetry.dev-dependencies]
+
+[tool.black]
+# https://github.com/psf/black
+target-version = ["py38"]
+line-length = 100
+color = true
+
+[tool.isort]
+include_trailing_comma = true
+multi_line_output = 3
+profile = "black"

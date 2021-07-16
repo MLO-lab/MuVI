@@ -8,7 +8,6 @@
 # Misc folders
 logs/
 data/
-dataset/
 output/
 output_*/
 examples/*_results_*

@@ -19,7 +19,7 @@ LOG_FILENAME = "log.log"
 
 
 def configure_logger(output_file: str = LOG_FILENAME):
-    """Configure logger with two handlers, one for console logging and one for persistent logging.
+    """Configure logger with console logging and persistent logging handler.
 
     Parameters
     ----------

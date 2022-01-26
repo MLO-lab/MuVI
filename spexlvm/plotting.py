@@ -1,35 +1,22 @@
 """Collection of plotting functions."""
-import os
-
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import seaborn as sns
 
-sns.set_theme()
-sns.set_context("paper", font_scale=2)
-# plt.style.use("ggplot")
 
-
-def save_figure(file_path):
+def save_figure(file_path, fmt="png", close_fig=False):
     """Save the last figure that was plotted."""
-    for fmt in ["png"]:
-        # for fmt in ["pdf", "pgf", "png"]:
-        plt.savefig(
-            file_path + "." + fmt,
-            dpi=300,
-            format=fmt,
-            # transparent=True,
-            facecolor=(1, 1, 1, 0),
-            bbox_inches="tight",
-        )
-    plt.close()
-
-
-def heatmap(data, figsize=(20, 10), annot=True, **kwargs):
-    """Generate a heatmap of a matrix."""
-    fig, ax = plt.subplots(figsize=figsize)  # Sample figsize in inches
-    return sns.heatmap(data, annot=annot, ax=ax, **kwargs)
+    # for fmt in ["pdf", "pgf", "png"]:
+    plt.savefig(
+        file_path + "." + fmt,
+        dpi=300,
+        format=fmt,
+        # transparent=True,
+        facecolor=(1, 1, 1, 0),
+        bbox_inches="tight",
+    )
+    if close_fig:
+        plt.close()
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
@@ -47,38 +34,6 @@ def plot_confusion_matrix(
     cmap="Blues",
     title=None,
 ):
-    """
-    Generate a pretty plot of an sklearn Confusion Matrix cm using a Seaborn heatmap visualization.
-
-    Arguments
-    ---------
-    cf:            confusion matrix to be passed in
-
-    group_names:   List of strings that represent the labels row by row to be shown in each square.
-
-    categories:    List of strings containing the categories to be displayed on the x,y axis. Default is 'auto'
-
-    count:         If True, show the raw number in the confusion matrix. Default is True.
-
-    normalize:     If True, show the proportions for each category. Default is True.
-
-    cbar:          If True, show the color bar. The cbar values are based off the values in the confusion matrix.
-                   Default is True.
-
-    xyticks:       If True, show x and y ticks. Default is True.
-
-    xyplotlabels:  If True, show 'True Label' and 'Predicted Label' on the figure. Default is True.
-
-    sum_stats:     If True, display summary statistics below the figure. Default is True.
-
-    figsize:       Tuple representing the figure size. Default will be the matplotlib rcParams value.
-
-    cmap:          Colormap of the values displayed from matplotlib.pyplot.cm. Default is 'Blues'
-                   See http://matplotlib.org/examples/color/colormaps_reference.html
-
-    title:         Title for the heatmap. Default is None.
-
-    """
     # CODE TO GENERATE TEXT INSIDE EACH SQUARE
     blanks = ["" for i in range(cf.size)]
 
@@ -93,12 +48,15 @@ def plot_confusion_matrix(
         group_counts = blanks
 
     if percent:
-        group_percentages = ["{0:.2%}".format(value) for value in cf.flatten() / np.sum(cf)]
+        group_percentages = [
+            "{0:.2%}".format(value) for value in cf.flatten() / np.sum(cf)
+        ]
     else:
         group_percentages = blanks
 
     box_labels = [
-        f"{v1}{v2}{v3}".strip() for v1, v2, v3 in zip(group_labels, group_counts, group_percentages)
+        f"{v1}{v2}{v3}".strip()
+        for v1, v2, v3 in zip(group_labels, group_counts, group_percentages)
     ]
     box_labels = np.asarray(box_labels).reshape(cf.shape[0], cf.shape[1])
 
@@ -113,10 +71,10 @@ def plot_confusion_matrix(
             precision = cf[1, 1] / sum(cf[:, 1])
             recall = cf[1, 1] / sum(cf[1, :])
             f1_score = 2 * precision * recall / (precision + recall)
-            stats_text = (
-                "\n\nAccuracy={:0.3f}\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}".format(
-                    accuracy, precision, recall, f1_score
-                )
+            stats_text = "\n\nAccuracy={:0.3f}".format(
+                accuracy
+            ) + "\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}".format(
+                precision, recall, f1_score
             )
         else:
             stats_text = "\n\nAccuracy={:0.3f}".format(accuracy)
@@ -124,11 +82,11 @@ def plot_confusion_matrix(
         stats_text = ""
 
     # SET FIGURE PARAMETERS ACCORDING TO OTHER ARGUMENTS
-    if figsize == None:
+    if figsize is None:
         # Get default figure size if not set
         figsize = plt.rcParams.get("figure.figsize")
 
-    if xyticks == False:
+    if not xyticks:
         # Do not show categories if xyticks is False
         categories = False
 
@@ -156,35 +114,19 @@ def plot_confusion_matrix(
     return accuracy, precision, recall, f1_score
 
 
-def plot_relevance(df, xlabel, ylabel, ordered=True, top_k=20, fig_path=None, **kwargs):
-    """Plot factor/feature relevance as a scatterplot.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Dataframe of the relevant data
-    xlabel : str
-        Column name for the x-axis
-    ylabel : str
-        Column name for the y-axis
-    ordered : bool, optional
-        Whether to order by xlabel, by default True
-    top_k : int, optional
-        Show only top_k results, by default 20
-    fig_path : str, optional
-        Path to store plot, by default None
-
-    Returns
-    -------
-    Axes
-        Axes object for further modification.
-    """
-    if ordered:
-        df = df.sort_values([xlabel], ascending=True).iloc[-top_k:]
-    ax = sns.scatterplot(data=df, x=xlabel, y=ylabel, **kwargs)
+def plot_factor_relevance(
+    df, xlabel, ylabel, order_by=None, top_k=20, fig_path=None, **kwargs
+):
+    if order_by is None:
+        order_by = xlabel
+    df = df.sort_values([order_by], ascending=True)
+    ax = sns.scatterplot(data=df.iloc[-top_k:], x=xlabel, y=ylabel, **kwargs)
     if fig_path is not None:
-        ax.set_title(
-            " ".join([title_part.capitalize() for title_part in fig_path.split("/")[-1].split("_")])
-        )
+        title_parts = fig_path.split("/")[-1].split("_")
+        if title_parts[-1][-1] == ")":
+            title = " ".join(title_parts[2:])
+        else:
+            title = " ".join([title_part.capitalize() for title_part in title_parts])
+        ax.set_title(title)
         save_figure(fig_path)
     return ax

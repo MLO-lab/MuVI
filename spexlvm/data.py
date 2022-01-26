@@ -1,11 +1,11 @@
 """Data module."""
 import math
 import os
-from typing import Collection, Dict, Iterable, List
+from typing import Collection, Iterable, List, Tuple
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import torch
 from gsea_api.molecular_signatures_db import (
     GeneSet,
     GeneSets,
@@ -30,6 +30,17 @@ class Pathways(GeneSets):
         """
         super().__init__(gene_sets=gene_sets, **kwargs)
 
+    def _to_gmt(self, f: str):
+        for gene_set in self.gene_sets:
+            f.write(
+                gene_set.name
+                + "\t"
+                + gene_set.description
+                + "\t"
+                + "\t".join(gene_set.genes)
+                + "\n"
+            )
+
     def info(self, verbose: int = 0):
         """Get an overview of this pathway collection.
 
@@ -48,7 +59,9 @@ class Pathways(GeneSets):
             Raised on negative verbosity level
         """
         if verbose < 0:
-            raise ValueError("Invalid verbosity level of %s, please use 0, 1 or 2." % verbose)
+            raise ValueError(
+                "Invalid verbosity level of %s, please use 0, 1 or 2." % verbose
+            )
 
         info = str(self) + "\n"
 
@@ -59,7 +72,12 @@ class Pathways(GeneSets):
             info += "Following gene sets (with genes) are stored:\n"
             # double list comprehension is not readable
             for gene_sets in self.gene_sets:
-                info += gene_sets.name + ": " + ", ".join([gene for gene in gene_sets.genes]) + "\n"
+                info += (
+                    gene_sets.name
+                    + ": "
+                    + ", ".join([gene for gene in gene_sets.genes])
+                    + "\n"
+                )
 
         return info
 
@@ -74,7 +92,8 @@ class Pathways(GeneSets):
         Returns
         -------
         dict
-            Search results as a dictionary of {partial_gene_set_names[0]: [GeneSet], ...}
+            Search results as a dictionary of
+            {partial_gene_set_names[0]: [GeneSet], ...}
         """
         search_results = {partial_gsn: [] for partial_gsn in partial_gene_set_names}
         for partial_gsn in partial_gene_set_names:
@@ -148,14 +167,15 @@ class Pathways(GeneSets):
             gene_fraction = available_genes / len(gene_set.genes)
             if gene_set.name in keep:
                 logger.info(
-                    "Keeping a %s out of %s genes (%.2f) from the special gene set '%s'.",
+                    "Keeping a %s out of %s genes (%.2f) from '%s'.",
                     available_genes,
                     len(gene_set.genes),
                     gene_fraction,
                     gene_set.name,
                 )
             if gene_set.name in keep or (
-                gene_fraction >= fraction_available and available_genes >= min_gene_count
+                gene_fraction >= fraction_available
+                and available_genes >= min_gene_count
             ):
                 if max_gene_count == 0 or available_genes <= max_gene_count:
                     pathways_subset.add(
@@ -180,7 +200,7 @@ class Pathways(GeneSets):
 
         Returns
         -------
-        torch.Tensor
+        ndarray
         """
         gene_sets_list = list(self.gene_sets)
         if sort:
@@ -188,16 +208,17 @@ class Pathways(GeneSets):
         # probably faster than calling list.index() for every gene in the pathways
         gene_to_idx = {k: v for k, v in zip(genes, range(len(genes)))}
 
-        mask = torch.zeros(len(gene_sets_list), len(genes))
+        mask = np.zeros((len(gene_sets_list), len(genes)))
 
         for i, gene_sets in enumerate(gene_sets_list):
             for gene in gene_sets.genes:
-                mask[i, gene_to_idx[gene]] = 1.0
+                if gene in gene_to_idx:
+                    mask[i, gene_to_idx[gene]] = 1.0
 
         return mask, gene_sets_list
 
 
-def load_pathways(keep=None):
+def load_pathways(keep: List[str] = None):
     """Load pathways from the existing msigdb.
 
     Parameters
@@ -213,30 +234,58 @@ def load_pathways(keep=None):
         keep = ["hallmark", "reactome"]
     # load msigdb files located at ./msigdb (.gmt extension)
     msigdb = MolecularSignaturesDatabase(os.path.join("..", "msigdb"), version=7.4)
-    print(msigdb)
     # relevant gene sets dictionary
     gene_sets = {
         "hallmark": "h.all",
         "kegg": "c2.cp.kegg",
         "reactome": "c2.cp.reactome",
     }
-    # gene_sets = {"hallmark": "h.all"}
     # load relevant pathways
-    pathway_dict = {k: msigdb.load(v, "symbols") for k, v in gene_sets.items() if k in keep}
+    pathway_dict = {
+        k: msigdb.load(v, id_type="symbols") for k, v in gene_sets.items() if k in keep
+    }
 
     # concatenate pathways
-    pathways = Pathways(sum([pathway_dict[k].gene_sets for k in pathway_dict.keys()], ()))
+    pathways = Pathways(
+        sum([pathway_dict[k].gene_sets for k in pathway_dict.keys()], ())
+    )
 
     return pathways
 
 
-def load_dataset(dataset, subsample_size=0, n_top_genes=0, center=True):
+def load_dataset(
+    dataset: str,
+    subsample_size: int = 0,
+    n_top_genes: int = 0,
+    center: bool = True,
+    as_adata: bool = True,
+):
+    """Load dataset.
+
+    Parameters
+    ----------
+    dataset : str
+        Name of the dataset, e.g. mesc, retina_large
+    subsample_size : int, optional
+        Size of a random sample from the dataset, by default 0 (all)
+    n_top_genes : int, optional
+        Number of the most variable genes, by default 0 (all)
+    center : bool, optional
+        Whether to center the data, by default True
+    as_adata : bool, optional
+        Whether to return an AnnData or a dictionary, by default True
+
+    Returns
+    -------
+    object
+        ad.AnnData or dictionary of "Y", "label", "batch"
+    """
     # lambda allows for lazy loading..
     dataset_dict = {
         "mesc": lambda: load_mesc,
+        "retina_large": lambda: load_retina_large,
         "retina_small": lambda: load_retina_small,
         "retina_rod": lambda: load_retina_rod,
-        "retina_large": lambda: load_retina_large,
     }
     Y, labels, batch = dataset_dict.get(dataset)()()
 
@@ -261,14 +310,25 @@ def load_dataset(dataset, subsample_size=0, n_top_genes=0, center=True):
 
     # all genes have uppercase in pathways
     Y.columns = Y.columns.str.upper()
-    # Y = Y.rename(str.upper, axis='columns')
-    return Y, labels, batch
+
+    result = {"Y": Y, "label": labels, "batch": batch}
+
+    if as_adata:
+        result = ad.AnnData(Y)
+        if labels is not None:
+            result.obs["label"] = labels
+        if batch is not None:
+            result.obs["batch"] = batch
+
+    return result
 
 
 def load_mesc():
-    Y = pd.read_csv(os.path.join(config.DATASET_DIR, "Buettneretal.csv.gz"), compression="gzip")
+    Y = pd.read_csv(
+        os.path.join(config.DATASET_DIR, "Buettneretal.csv.gz"), compression="gzip"
+    )
 
-    return Y, Y.index, None
+    return Y, [{1: "G1", 2: "S", 3: "G2/M"}[i] for i in Y.index], None
 
 
 def load_retina_large():
@@ -324,83 +384,318 @@ def load_retina_small():
     return Y, labels, batch
 
 
-def generate_toy_dataset(
-    n_samples: int = 10000,
-    n_features: int = 200,
-    n_factors: int = 40,
-    n_active_features: float = 0.1,
-    n_active_factors: float = 0.5,
-    constant_weight: float = 4.0,
-):
-    """Generate toy dataset for simulated evaluation.
+class DataGenerator:
+    def __init__(
+        self,
+        n_samples: int = 1000,
+        n_features: int = 200,
+        n_factors: int = 10,
+        likelihood: str = "normal",
+        factor_size_params: Tuple[float] = None,
+        factor_size_dist: str = "uniform",
+        n_active_factors: float = 1.0,
+    ) -> None:
+        """Generate synthetic data.
 
-    Parameters
-    ----------
-    n_samples : int, optional
-        Number of samples, by default 10000
-    n_features : int, optional
-        Number of features (genes), by default 200
-    n_factors : int, optional
-        Number of factors, by default 40
-    n_active_features : float, optional
-        Number or fraction of active genes per factor, by default 0.1
-    n_active_factors : float, optional
-        Number of fraction of active factors, by default 0.5
-    constant_weight : float, optional
-        A constant weight to fill in the non-zero elements, by default 4.0
+        Parameters
+        ----------
+        n_samples : int, optional
+            Number of samples, by default 1000
+        n_features : int, optional
+            Number of features, by default 200
+        n_factors : int, optional
+            Number of latent factors, by default 10
+        likelihood : str, optional
+            Likelihood, either "normal" or "bernoulli", by default "normal"
+        factor_size_params : Tuple[float], optional
+            Parameters for the distribution of the number
+            of active factor loadings for the latent factors,
+            by default None
+        factor_size_dist : str, optional
+            Distribution of the number of active factor loadings,
+            either "uniform" or "gamma",
+            by default "uniform"
+        n_active_factors : float, optional
+            Number or fraction of active factors, by default 1.0 (all)
+        """
 
-    Returns
-    -------
-    tuple
-        w, mask, active factor indices, x, y
-    """
-    if isinstance(n_active_features, float):
-        n_active_features = (n_active_features, n_active_features)
+        self.n_samples = n_samples
+        self.n_features = n_features
+        self.n_factors = n_factors
+        self.likelihood = likelihood
+        if factor_size_params is None:
+            if factor_size_dist == "uniform":
+                logger.warning(
+                    "Using a uniform distribution with parameters 0.05 and 0.15 "
+                    "for generating the number of active factor loadings."
+                )
+                factor_size_params = (0.05, 0.15)
+            elif factor_size_dist == "gamma":
+                logger.warning(
+                    "Using a uniform distribution with shape of 1 and scale of 50 "
+                    "for generating the number of active factor loadings."
+                )
+                factor_size_params = (1.0, 50.0)
 
-    # convert active features and factors into fractions if > 1.0
-    n_active_features = tuple(
-        naft / n_features if naft > 1.0 else naft for naft in n_active_features
-    )
-    min_n_active_features, max_n_active_features = n_active_features
-    if n_active_factors > 1.0:
-        n_active_factors /= n_factors
+        self.factor_size_params = factor_size_params
+        self.factor_size_dist = factor_size_dist
 
-    w_shape = [n_factors, n_features]
-    x_shape = [n_samples, n_factors]
-    true_mask = torch.zeros(w_shape)
-    constant_w = constant_weight * torch.ones(w_shape)
-    for factor_idx, naft in enumerate(
-        np.random.uniform(min_n_active_features, max_n_active_features, n_factors)
-    ):
-        true_mask[factor_idx] = torch.multinomial(
-            torch.tensor([1 - naft, naft]),
-            w_shape[1],
-            replacement=True,
-        )
-    # generate small random values around 0
-    random_noise = torch.normal(
-        mean=torch.zeros(w_shape), std=constant_weight / 50 * torch.ones(w_shape)
-    )
-    true_w = true_mask * constant_w + random_noise
-    true_x = torch.normal(mean=torch.zeros(x_shape), std=torch.ones(x_shape))
+        if n_active_factors <= 1.0:
+            # if fraction of active factors convert to int
+            n_active_factors = int(n_active_factors * self.n_factors)
 
-    active_factor_indices = sorted(
-        np.random.choice(
-            range(n_factors),
-            size=math.ceil(n_factors * n_active_factors),
-            replace=False,
-        )
-    )
-    for row_idx in range(n_factors):
-        if row_idx not in active_factor_indices:
-            true_w[row_idx, :] = torch.normal(
-                torch.zeros(n_features),
-                std=constant_weight / 50 * torch.ones(n_features),
+        self.n_active_factors = n_active_factors
+
+        # set upon data generation
+        self.x = None
+        self.w = None
+        self.y = None
+        self.w_mask = None
+        self.noisy_w_mask = None
+        self.active_factor_indices = None
+
+        # set when introducing missingness
+        self.presence_mask = None
+
+    @property
+    def missing_y(self):
+        if self.y is None:
+            logger.warning("Generate data first by calling `generate`.")
+            return self.y
+        if self.presence_mask is None:
+            logger.warning(
+                "Introduce missing data first by calling `generate_missingness_mask`."
             )
-    return (
-        true_w,
-        true_mask,
-        active_factor_indices,
-        true_x,
-        torch.matmul(true_x, true_w),
+            return self.y
+
+        return self.y * self._mask_to_nan()
+
+    def _mask_to_nan(self):
+        nan_mask = np.array(self.presence_mask, dtype=np.float32, copy=True)
+        nan_mask[nan_mask == 0] = np.nan
+        return nan_mask
+
+    def _mask_to_bool(self):
+        return self.presence_mask == 1.0
+
+    def normalise(self, with_std=False):
+        if self.likelihood == "normal":
+            y = np.array(self.y, copy=True)
+            y -= y.mean(axis=0)
+            if with_std:
+                y_std = y.std(axis=0)
+                y = np.divide(y, y_std, out=np.zeros_like(y), where=y_std != 0)
+            self.y = y
+
+    def sigmoid(self, x):
+        return 1.0 / (1 + np.exp(-x))
+
+    def generate(self, seed: int = None, overwrite: bool = False) -> None:
+
+        rng = np.random.default_rng()
+
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+
+        if self.y is not None and not overwrite:
+            logger.warning(
+                "Data has already been generated, "
+                "to generate new data please set `overwrite` to True."
+            )
+            return rng
+
+        # generate factor scores which lie in the latent space
+        x = rng.standard_normal((self.n_samples, self.n_factors))
+
+        # generate factor loadings
+        w_shape = (self.n_factors, self.n_features)
+        w = rng.standard_normal(w_shape) * 4.0
+
+        w_mask = np.zeros(w_shape)
+
+        active_factor_indices = sorted(
+            rng.choice(
+                self.n_factors,
+                size=math.ceil(self.n_active_factors),
+                replace=False,
+            )
+        )
+
+        fraction_active_features = {
+            "gamma": lambda shape, scale: (rng.gamma(shape, scale, self.n_factors) + 20)
+            / self.n_features,
+            "uniform": lambda low, high: rng.uniform(low, high, self.n_factors),
+        }[self.factor_size_dist](self.factor_size_params[0], self.factor_size_params[1])
+
+        for factor_idx, faft in enumerate(fraction_active_features):
+            if factor_idx in active_factor_indices:
+                w_mask[factor_idx] = rng.choice(2, self.n_features, p=[1 - faft, faft])
+
+        # set small values to zero
+        w_mask[np.abs(w) < 0.5] = 0.0
+        w = w_mask * w
+        # add some noise to avoid exactly zero values
+        w = np.where(np.abs(w) < 0.5, w + rng.standard_normal(w_shape) / 20, w)
+        # assert ((np.abs(w) > 0.5)*1.0 == w_mask).all()
+
+        # generate feature sigmas
+        sigma = 1.0 / np.sqrt(rng.gamma(5.0, 0.5, self.n_features))
+        loc = np.matmul(x, w)
+
+        if self.likelihood == "normal":
+            y = rng.normal(loc=loc, scale=sigma)
+        else:
+            y = rng.binomial(1, self.sigmoid(loc))
+
+        self.x = x
+        self.w = w
+        self.w_mask = w_mask
+        self.sigma = sigma
+        self.y = y
+        self.active_factor_indices = active_factor_indices
+
+        return rng
+
+    def get_noisy_w_mask(self, rng=None, noise_fraction=0.1):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        noisy_w_mask = np.array(self.w_mask, copy=True)
+
+        for factor_idx in range(self.n_factors):
+
+            active_cell_indices = noisy_w_mask[factor_idx, :].nonzero()[0]
+            inactive_cell_indices = (noisy_w_mask[factor_idx, :] == 0).nonzero()[0]
+            n_noisy_cells = int(noise_fraction * len(active_cell_indices))
+            swapped_indices = zip(
+                rng.choice(len(active_cell_indices), n_noisy_cells, replace=False),
+                rng.choice(len(inactive_cell_indices), n_noisy_cells, replace=False),
+            )
+
+            for on_idx, off_idx in swapped_indices:
+                noisy_w_mask[factor_idx, active_cell_indices[on_idx]] = 0.0
+                noisy_w_mask[factor_idx, inactive_cell_indices[off_idx]] = 1.0
+
+        self.noisy_w_mask = noisy_w_mask
+        return self.noisy_w_mask
+
+    def generate_missingness_mask(
+        self,
+        missing_fraction: float = 0.0,
+        seed=None,
+    ):
+        rng = np.random.default_rng()
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+        # remove random fraction
+        self.presence_mask = rng.choice(
+            [0, 1], self.y.shape, p=[missing_fraction, 1 - missing_fraction]
+        )
+        return rng
+
+    def permute_features(self, new_feature_order):
+        if len(new_feature_order) != self.n_features:
+            raise ValueError(
+                "Length of new order list must equal the number of features."
+            )
+
+        new_feature_order = np.array(new_feature_order)
+
+        self.w = np.array(self.w[:, new_feature_order], copy=True)
+        self.w_mask = np.array(self.w_mask[:, new_feature_order], copy=True)
+        if self.noisy_w_mask is not None:
+            self.noisy_w_mask = np.array(
+                self.noisy_w_mask[:, new_feature_order], copy=True
+            )
+
+        self.sigma = np.array(self.sigma[new_feature_order], copy=True)
+        self.y = np.array(self.y[:, new_feature_order], copy=True)
+        if self.presence_mask is not None:
+            self.missing_y = np.array(self.missing_y[:, new_feature_order], copy=True)
+            self.presence_mask = np.array(
+                self.presence_mask[:, new_feature_order], copy=True
+            )
+
+    def permute_factors(self, new_factor_order):
+        if len(new_factor_order) != self.n_factors:
+            raise ValueError(
+                "Length of new order list must equal the number of factors."
+            )
+
+        self.x = np.array(self.x[:, new_factor_order], copy=True)
+        self.w = np.array(self.w[new_factor_order, :], copy=True)
+        self.w_mask = np.array(self.w_mask[new_factor_order, :], copy=True)
+        if self.noisy_w_mask is not None:
+            self.noisy_w_mask = np.array(
+                self.noisy_w_mask[new_factor_order, :], copy=True
+            )
+
+        # TODO: what about active factor indices?
+
+    def to_adata(self, missing=False, **kwargs):
+        y = self.y
+        if missing:
+            y = self.missing_y
+
+        return ad.AnnData(
+            pd.DataFrame(
+                y,
+                columns=[f"feature_{j}" for j in range(self.n_features)],
+                index=[f"sample_{i}" for i in range(self.n_samples)],
+            ),
+            dtype="float32",
+        )
+
+
+if __name__ == "__main__":
+    n_samples = 100
+    n_clusters = 1
+    cluster_type = "blobs"
+    n_features = 200
+    n_factors = 10
+    n_active_features = (0.05, 0.15)
+    n_active_factors = 1.0
+
+    dg = DataGenerator(
+        n_samples,
+        n_clusters,
+        cluster_type,
+        n_features,
+        n_factors,
+        likelihood="normal",
+        n_active_features=n_active_features,
+        factor_size_dist="uniform",
+        n_active_factors=n_active_factors,
     )
+
+    dg.generate(overwrite=True)
+
+    assert dg.x.shape[0] == n_samples
+    assert dg.x.shape[1] == dg.n_factors
+
+    assert dg.w.shape[0] == dg.n_factors
+    assert dg.w.shape[1] == n_features
+
+    assert dg.ys.shape[0] == n_samples
+    assert dg.ys.shape[1] == n_features
+
+    dg.generate_missingness_mask(
+        fraction_missing=0.1,
+        n_partial_samples=10,
+        n_partial_features=10,
+        n_features=10,
+    )
+    # test r2_score
+    from sklearn.metrics import r2_score
+
+    x = dg.x
+    w = dg.w
+
+    y_true = dg.y
+    y_pred_tot = x @ w
+    r2 = r2_score(y_true, y_pred_tot)
+    factor_r2_scores = []
+    for k in range(n_factors):
+        y_pred = np.outer(x[:, k], w[k, :])
+
+        factor_r2_scores.append(r2_score(y_true, y_pred))

@@ -106,29 +106,6 @@ def compute_factor_relevance(
             r2_scores[k] = 1 - (ss_res / ss_tot)
     return r2_scores, r2_score_acc
 
-    # """Helper function to load pathways from msigdb.
-
-    # Parameters
-    # ----------
-    # genes : List[str]
-    #     List of genes with which to subset the pathways
-    # pathways : List[str]
-    #     List of the names of pathway collections
-    # pathway_min_gene_fraction : float, optional
-    #     Min fraction genes available in a pathway, by default 0.1
-    # pathway_min_gene_count : int, optional
-    #     Min number genes available in a pathway, by default 15
-    # max_gene_count : int, optional
-    #     asd, by default 350
-    # redundant_pathways : list, optional
-    #     asd, by default []
-
-    # Returns
-    # -------
-    # [type]
-    #     [description]
-    # """
-
 
 def get_pathways(
     genes: List[str],

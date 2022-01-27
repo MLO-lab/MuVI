@@ -1,18 +1,21 @@
-import os
-
 import numpy as np
-import pandas as pd
-import anndata as ad
-
-from spexlvm import data
 
 
 def test_shapes(data_generator):
 
     data_generator.generate()
-    assert data_generator.x.shape == (data_generator.n_samples, data_generator.n_factors)
-    assert data_generator.w.shape == (data_generator.n_factors, data_generator.n_features)
-    assert data_generator.y.shape == (data_generator.n_samples, data_generator.n_features)
+    assert data_generator.x.shape == (
+        data_generator.n_samples,
+        data_generator.n_factors,
+    )
+    assert data_generator.w.shape == (
+        data_generator.n_factors,
+        data_generator.n_features,
+    )
+    assert data_generator.y.shape == (
+        data_generator.n_samples,
+        data_generator.n_features,
+    )
 
 
 def test_w_mask(data_generator):
@@ -31,7 +34,9 @@ def test_noisy_w_mask(data_generator):
 
     noise_fraction = 0.1
     w_mask = data_generator.w_mask.astype(bool)
-    noisy_w_mask = data_generator.get_noisy_w_mask(noise_fraction=noise_fraction).astype(bool)
+    noisy_w_mask = data_generator.get_noisy_w_mask(
+        noise_fraction=noise_fraction
+    ).astype(bool)
 
     p = w_mask.sum(1)
     tp = (noisy_w_mask & w_mask).sum(1)

@@ -1,371 +1,189 @@
+import logging
 from typing import Callable, List
 
-import anndata as ad
 import numpy as np
-import pandas as pd
 import pyro
 import pyro.distributions as dist
 import torch
-from pyro.infer.autoguide.guides import AutoNormal
-from pyro.nn import PyroModule
+from pyro.distributions import constraints
+from pyro.infer.autoguide.guides import deep_getattr, deep_setattr
+from pyro.nn import PyroModule, PyroParam
 from pyro.optim import Adam, ClippedAdam
 from tqdm import tqdm
 
-from spexlvm import config
-
-# logging stuff
-logger = config.logger
+logger = logging.getLogger(__name__)
 
 
-class Spex(PyroModule):
+class MuVI(PyroModule):
     def __init__(
         self,
-        n_features: int,
-        n_annotated: int,
-        n_sparse: int = 0,
-        n_dense: int = 0,
-        likelihood: str = "normal",
-        global_prior_scale: float = 0.1,
-        factor_scale_on: bool = False,
-        use_cuda=False,
+        n_factors: int,
+        observations: np.ndarray,
+        covariates: np.ndarray = None,
+        likelihoods: List[str] = None,
+        use_gpu: bool = True,
+        **kwargs,
     ):
-        """Initialise model.
+        """MuVI module.
 
         Parameters
         ----------
-        n_features : int
-            Number of features (genes)
-        n_annotated : int
-            Number of annotated factors based on a pathway mask
-        n_sparse : int, optional
-            Number of sparse unannotated factors, by default 0
-        n_dense : int, optional
-            Number of dense unannotated factors, by default 0
-        likelihood : str, optional
-            Likelihood, either "normal" or "bernoulli", by default "normal"
-        global_prior_scale : float, optional
-            The prior on of the global scale,
-            small values encourage the weights to be sparse,
-            by default 0.1
-        factor_scale_on : bool, optional
-            Whether to set a (regularised) horseshoe prior on the factors as well,
-            by default False
-        use_cuda : bool, optional
-            Whether to use a GPU, by default False
+        n_factors : int
+            Number of latent factors
+        observations : np.ndarray
+            N x D matrix of observations
+        covariates : np.ndarray
+            N x P matrix of covariates
+        likelihoods : List[str], optional
+            List of likelihoods for each view,
+            either 'normal' or 'bernoulli', by default None
+        use_gpu : bool, optional
+            Whether to use a GPU, by default True
+
+        Raises
+        ------
+        ValueError
+            Missing or negative number of factors
+        ValueError
+            Missing observations
         """
-        super().__init__()
+        super().__init__(name="MuVI")
 
-        self.n_features = n_features
-        self.n_annotated = n_annotated
-        self.n_sparse = n_sparse
-        self.n_dense = n_dense
-        self.n_factors = n_annotated + n_sparse + n_dense
-        if likelihood is None:
-            likelihood = "normal"
-        self.likelihood = likelihood
+        if n_factors is None or n_factors <= 0:
+            raise ValueError("Invalid `n_factors`, please pass a positive integer.")
+        self.n_factors = n_factors
 
-        self.global_prior_scale = global_prior_scale
-        self.factor_scale_on = factor_scale_on
+        if observations is None:
+            raise ValueError(
+                "Object observations is None, please pass a valid list of observations."
+            )
+        if not isinstance(observations, list):
+            observations = [observations]
+        if len(observations) == 1:
+            logger.warning("Running MuVI on a single view.")
 
-        self.use_cuda = use_cuda
-        if use_cuda:
-            self.cuda()
+        self.n_samples = observations[0].shape[0]
+        self.n_features = [y.shape[1] for y in observations]
+        self.feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+        self.n_views = len(self.n_features)
 
-        self.adata = None
-        self.data = None
-        self.presence_mask = None
-        self.local_prior_scales = None
-        self.n_samples = 0
-        self.batch_size = 0
+        if likelihoods is None:
+            likelihoods = ["normal" for _ in range(self.n_views)]
+        if len(set(likelihoods)) > 1:
+            logger.warning(
+                "Different likelihoods for each view currently not supported, "
+                "using %s for all views.",
+                likelihoods[0],
+            )
+        self.likelihoods = likelihoods
 
-        self._guide = None
-        self._svi = None
+        self.observations = observations
+
+        self.n_covariates = 0
+        if covariates is not None:
+            self.n_covariates = covariates.shape[1]
+        self.covariates = covariates
+
+        self.device = torch.device("cpu")
+        if use_gpu and torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        self.to(self.device)
+
+        self.kwargs = kwargs
+
+        self.prior_scales = None
+        self.model = None
+        self.guide = None
         self._is_built = False
 
-    @property
-    def guide(self):
-        """Get the AutoNormal guide.
-
-        Returns
-        -------
-        pyro.infer.autoguide.guides.AutoNormal
-        """
-        if self._guide is None:
-            self._guide = AutoNormal(self, init_scale=0.01)
-        return self._guide
-
-    @property
-    def svi(self):
-        """Initialise the stochastic variational inference (SVI) trainer.
-
-        Returns
-        -------
-        pyro.infer.SVI
-        """
-        if self._svi is None:
-
-            scale = 1.0 / self.batch_size
-            self._svi = pyro.infer.SVI(
-                model=pyro.poutine.scale(self, scale=scale),
-                guide=pyro.poutine.scale(self.guide, scale=scale),
-                # model=self,
-                # guide=self.guide,
-                optim=self.optimizer,
-                loss=pyro.infer.TraceMeanField_ELBO(
-                    retain_graph=True,
-                ),
-            )
-        return self._svi
-
-    def get_plates(self, n_samples: int, subsample_size: int = None):
-        """Get sampling plates.
-
-        Parameters
-        ----------
-        n_samples : int
-            Number of samples, usually len(data)
-        subsample_size : int, optional
-            Subsample size if relying on stochastic VI, by default None
-
-        Returns
-        -------
-        dict
-            Dictionary of plate names and pyro plates
-        """
-        return {
-            "factor": pyro.plate("factor", self.n_factors, dim=-2),
-            "feature": pyro.plate("feature", self.n_features, dim=-1),
-            "sample": pyro.plate(
-                "sample",
-                n_samples,
-                subsample_size=subsample_size,
-                dim=-2,
-            ),
-        }
-
-    def _get_param(self, param_name: str, as_map: bool = True):
-        """Get parameters from the parameter store.
-
-        Parameters
-        ----------
-        param_name : str
-            Name of the parameter
-        as_map : bool, optional
-            Whether to get a MAP estimate, by default True
-
-        Returns
-        -------
-        np.ndarray
-            Parameters
-        """
-        map_output = self._guide(self.n_samples)
-        if as_map:
-            param_name = param_name.split(".")[-1]
-            if param_name not in map_output.keys():
-                return np.zeros((1, 1))
-            param = map_output[param_name]
-        else:
-            if param_name not in pyro.get_param_store().keys():
-                return np.zeros((1, 1))
-            param = pyro.param(param_name)
-
-        return param.cpu().detach().numpy()
-
-    def get_global_scale(self):
-        """Get the global scale of the model.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.global_scale", as_map=False)
-
-    def get_factor_scale(self):
-        """Get the factor scales of the model.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.factor_scale", as_map=False)
-
-    def get_local_scale(self):
-        """Get the local scales of the model.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.local_scale", as_map=False)
-
-    def get_w(self):
-        """Get the weights of the model.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.w", as_map=False)
-
-    def get_x(self):
-        """Get the factor scores for each datapoint.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.x", as_map=False)
-
-    def get_precision(self):
-        """Get the feature precisions of the model.
-
-        Returns
-        -------
-        np.ndarray
-        """
-        return self._get_param("_guide.locs.precision", as_map=True)
-
-    def mask_to_prior_scales(
-        self,
-        mask: np.ndarray,
-        scale_confidence: float,
-        sparse_prior_scale: float = 0.05,
-        dense_prior_scale: float = 1.0,
-    ):
-        """Convert a boolean/binary mask into a prior for the local scales.
+    def add_prior_mask(self, mask: np.ndarray, confidence: float = 0.99):
+        """Generate local prior scales given a mask of feature sets.
 
         Parameters
         ----------
         mask : np.ndarray
-            Binary mask
-        scale_confidence : float
-            User confidence about the prior information,
-            common values are 0.9, 0.99, 0.999
-        sparse_prior_scale : float, optional
-            Prior local scales for the sparse factors, by default 0.05
-        dense_prior_scale : float, optional
-            Prior local scales for the dense factors, by default 1.0
-
-        Returns
-        -------
-        torch.Tensor
-            Local prior scales
+            K x D binary matrix of prior feature sets
+        confidence : float, optional
+            Confidence of the prior belief, larger more confident
+            typical values 0.9, 0.95, 0.99, 0.999, by default 0.99
         """
+        n_prior_factors = len(mask[0])
+        if n_prior_factors > self.n_factors:
+            logger.warning(
+                "Prior mask informs more factors than pre-defined `n_factors`. "
+                "Updating `n_factors` to %s.",
+                n_prior_factors,
+            )
+            self.n_factors = n_prior_factors
 
-        prior_scales = np.ones((self.n_factors, self.n_features))
-        prior_scales[: self.n_annotated, :] = np.clip(
-            mask.astype(np.float32) + (1.0 - scale_confidence), 1e-3, dense_prior_scale
-        )
+        if n_prior_factors < self.n_factors:
+            logger.warning(
+                "Prior mask informs fewer factors than pre-defined `n_factors`. "
+                "Informing only the first %s factors.",
+                n_prior_factors,
+            )
 
-        prior_scales[
-            self.n_annotated : self.n_annotated + self.n_sparse, :
-        ] = sparse_prior_scale
-        prior_scales[
-            self.n_annotated + self.n_sparse : self.n_factors, :
-        ] = dense_prior_scale
-        return torch.Tensor(prior_scales)
+        prior_scales = []
+        for m, view_mask in enumerate(mask):
+            view_prior_scales = np.ones((self.n_factors, self.n_features[m]))
+            view_prior_scales[: self.n_factors, :] = np.clip(
+                view_mask.astype(np.float32) + (1.0 - confidence), 1e-4, 1.0
+            )
+            prior_scales.append(view_prior_scales)
 
-    def build(
-        self,
-        adata: ad.AnnData = None,
-        data: np.ndarray = None,
-        pathway_mask: np.ndarray = None,
-        scale_confidence: float = 0.99,
-    ):
-        """Build model after initialisation.
+        self.prior_scales = prior_scales
+
+    def _setup_model_guide(self, batch_size: int):
+        """Setup model and guide.
 
         Parameters
         ----------
-        adata : ad.AnnData, optional
-            AnnData as training data, by default None
-        data : np.ndarray, optional
-            Numpy array as training data, by default None
-        pathway_mask : np.ndarray, optional
-            Binary mask of the pathways as prior information, by default None
-        scale_confidence : float, optional
-            User confidence about the prior information,
-            common values are 0.9, 0.99, 0.999,
-            by default 0.99
+        batch_size : int
+            Batch size when subsampling
 
         Returns
         -------
         bool
             Whether the build was successful
-
-        Raises
-        ------
-        ValueError
-            Raised if neither adata nor data was passed during build
         """
-        if adata is None and data is None:
-            raise ValueError(
-                "Invalid data! Both adata and data are None, "
-                "please pass an AnnData object or a torch Tensor."
-            )
-
         if not self._is_built:
-            if adata is not None:
-                self.adata = adata
-                if data is not None:
-                    logger.warning("Both adata and data passed, using adata only.")
-                data = adata.X.copy()
-                pathway_mask = None
-                if "pathway_mask" in adata.varm.keys():
-                    pathway_mask = adata.varm["pathway_mask"].T
-            self.data = torch.Tensor(data)
-            self.presence_mask = ~torch.isnan(self.data)
-            if pathway_mask is not None:
-                self.local_prior_scales = self.mask_to_prior_scales(
-                    pathway_mask, scale_confidence=scale_confidence
+            if self.prior_scales is None:
+                logger.warning(
+                    "No prior feature sets provided, running model uninformed."
                 )
-            self.n_samples = self.data.shape[0]
-            # can be overwritten later during `fit`
-            # only needed when generating data from the model
-            self.batch_size = self.n_samples
-            self._is_built = True
 
+            self.model = MuVIModel(
+                self.n_samples,
+                n_subsamples=batch_size,
+                n_features=self.n_features,
+                n_factors=self.n_factors,
+                n_covariates=self.n_covariates,
+                likelihoods=self.likelihoods,
+                device=self.device,
+                **self.kwargs,
+            )
+            self.guide = MuVIGuide(self.model, device=self.device, **self.kwargs)
+            self._is_built = True
         return self._is_built
 
-    def fit(
-        self,
-        batch_size: int = 0,
-        n_iterations: int = 1000,
-        learning_rate: float = 0.001,
-        optimizer: str = "adam",
-        verbose: int = 1,
-        callbacks: List[Callable] = None,
-    ):
-        """Perform inference.
+    def _setup_optimizer(self, optimizer: str, learning_rate: float, n_iterations: int):
+        """Setup SVI optimizer.
 
         Parameters
         ----------
-        batch_size : int, optional
-            Size of batches, by default 0
-        n_iterations : int, optional
-            Number of iterations, by default 1000
-        learning_rate : float, optional
-            Learning rate, by default 0.001
-        optimizer : str, optional
-            Optimiser as string, either "adam" or "clipped", by default "adam"
-        verbose : int, optional
-            Verbosity level during training, by default 1
-        callbacks : List[Callable], optional
-            A list of callables that takes the loss history as argument,
-            by default None
+        optimizer : str
+            Optimizer as string, 'adam' or 'clipped'
+        learning_rate : float
+            Learning rate
+        n_iterations : int
+            Number of SVI iterations,
+            needed to schedule learning rate decay
 
         Returns
         -------
-        tuple
-            (The loss history, boolean flag whether training stopped early)
+        pyro.optim.PyroOptim
+            pyro or torch optimizer object
         """
-
-        if self.data is None:
-            logger.warning("No data available. Please build model before training.")
-
-        # if invalid or out of bounds set to n_samples
-        if batch_size is None or not (0 < batch_size <= self.n_samples):
-            batch_size = self.n_samples
-        self.batch_size = batch_size
 
         optim = Adam({"lr": learning_rate, "betas": (0.95, 0.999)})
         if optimizer.lower() == "clipped":
@@ -373,17 +191,141 @@ class Spex(PyroModule):
             lrd = gamma ** (1 / n_iterations)
             optim = ClippedAdam({"lr": learning_rate, "lrd": lrd})
 
-        self.optimizer = optim
-        svi = self.svi
+        self._optimizer = optim
+        return self._optimizer
 
+    def _setup_svi(
+        self,
+        batch_size: int,
+        optimizer: pyro.optim.PyroOptim,
+        n_particles: int,
+        scale: bool = True,
+    ):
+        """Setup stochastic variational inference.
+
+        Parameters
+        ----------
+        batch_size : int
+            Batch size
+        optimizer : pyro.optim.PyroOptim
+            pyro or torch optimizer
+        n_particles : int
+            Number of particles/samples used to form the ELBO (gradient) estimators
+        scale : bool, optional
+            Whether to scale ELBO by 1/batch_size, by default True
+
+        Returns
+        -------
+        pyro.infer.SVI
+            pyro SVI object
+        """
+        scaler = 1.0
+        if scale:
+            scaler = 1.0 / batch_size
+
+        svi = pyro.infer.SVI(
+            model=pyro.poutine.scale(self.model, scale=scaler),
+            guide=pyro.poutine.scale(self.guide, scale=scaler),
+            optim=optimizer,
+            loss=pyro.infer.TraceMeanField_ELBO(
+                retain_graph=True,
+                num_particles=n_particles,
+                vectorize_particles=True,
+            ),
+        )
+
+        self._svi = svi
+        return self._svi
+
+    def _setup_training_data(self):
+        """Setup training components.
+        Convert observations, covariates and prior scales to torch.Tensor and
+        extract mask of missing values to mask SVI updates.
+
+        Returns
+        -------
+        tuple
+            Tuple of (obs, mask, covs, prior_scales)
+        """
+        train_obs = torch.cat(
+            [torch.Tensor(view).to(self.device) for view in self.observations], 1
+        )
+        mask_obs = ~torch.isnan(train_obs)
         # replace all nans with zeros
         # self.presence mask takes care of gradient updates
-        train_data = torch.nan_to_num(self.data)
+        train_obs = torch.nan_to_num(train_obs)
 
-        if self.batch_size < self.n_samples:
+        train_covs = None
+        if self.covariates is not None:
+            train_covs = torch.Tensor(self.covariates).to(self.device)
+
+        train_prior_scales = None
+        if self.prior_scales is not None:
+            train_prior_scales = torch.cat(
+                [torch.Tensor(ps).to(self.device) for ps in self.prior_scales], 1
+            )
+
+        return train_obs, mask_obs, train_covs, train_prior_scales
+
+    def fit(
+        self,
+        batch_size: int = 0,
+        n_iterations: int = 1000,
+        n_particles: int = 20,
+        learning_rate: float = 0.005,
+        optimizer: str = "clipped",
+        verbose: bool = True,
+        callbacks: List[Callable] = None,
+    ):
+        """Perform inference.
+
+        Parameters
+        ----------
+        batch_size : int, optional
+            Batch size, by default 0 (all samples)
+        n_iterations : int, optional
+            Number of iterations, by default 1000
+        n_particles : int, optional
+            Number of particles/samples used to form the ELBO (gradient) estimators,
+            by default 20
+        learning_rate : float, optional
+            Learning rate, by default 0.005
+        optimizer : str, optional
+            Optimizer as string, 'adam' or 'clipped', by default "clipped"
+        verbose : bool, optional
+            Whether to log progress, by default 1
+        callbacks : List[Callable], optional
+            List of callbacks during training, by default None
+
+        Returns
+        -------
+        tuple
+            Tuple of (elbo history, whether training stopped early)
+        """
+
+        # if invalid or out of bounds set to n_samples
+        if batch_size is None or not (0 < batch_size <= self.n_samples):
+            batch_size = self.n_samples
+
+        if batch_size < self.n_samples:
             logger.info("Using batches of size %s", batch_size)
         else:
             logger.info("Using complete dataset")
+
+        logger.info("Preparing model and guide...")
+        self._setup_model_guide(batch_size)
+        logger.info("Preparing optimizer...")
+        optimizer = self._setup_optimizer(optimizer, learning_rate, n_iterations)
+        logger.info("Preparing SVI...")
+        svi = self._setup_svi(batch_size, optimizer, n_particles, scale=True)
+        logger.info("Preparing training data...")
+        (
+            train_obs,
+            mask_obs,
+            train_covs,
+            train_prior_scales,
+        ) = self._setup_training_data()
+        logger.info("Starting training...")
 
         stop_early = False
         history = []
@@ -392,7 +334,9 @@ class Spex(PyroModule):
             pbar = tqdm(pbar)
             window_size = 10
         for iteration_idx in pbar:
-            iteration_loss = svi.step(self.n_samples, train_data)
+            iteration_loss = svi.step(
+                train_obs, mask_obs, train_covs, train_prior_scales
+            )
             history.append(iteration_loss)
             if verbose > 0:
                 if (
@@ -408,135 +352,432 @@ class Spex(PyroModule):
 
         return history, stop_early
 
-    def forward(self, n_samples: int, data: torch.Tensor = None):
-        """Perform an iteration of the data generating process.
+    @torch.no_grad()
+    def _get_param(self, param_name: str):
+        """Get parameters from the parameter store.
+
+        Parameters
+        ----------
+        param_name : str
+            Name of the parameter
+
+        Returns
+        -------
+        np.ndarray
+            Parameters
+        """
+        return self.guide.mode(param_name).cpu().detach().numpy()
+        # return self.guide.median()[param_name].cpu().detach().numpy()
+
+    @torch.no_grad()
+    def _get_local_param(self, param_name: str, as_list: bool = False):
+        """Get local parameters from the parameter store
+
+        Parameters
+        ----------
+        param_name : str
+            Name of the parameter
+        as_list : bool, optional
+            Whether to get a view-wise list of parameters, by default False
+
+        Returns
+        -------
+        np.ndarray
+            Parameters
+        """
+        local_param = self._get_param(param_name)
+        if param_name == "sigma":
+            local_param = local_param[None, :]
+
+        if as_list:
+            return [
+                local_param[:, self.feature_offsets[m] : self.feature_offsets[m + 1]]
+                for m in range(self.n_views)
+            ]
+        return local_param
+
+    @torch.no_grad()
+    def get_view_scale(self):
+        """Get the view scales."""
+        return self._get_param("view_scale")
+
+    @torch.no_grad()
+    def get_factor_scale(self):
+        """Get the factor scales."""
+        return self._get_param("factor_scale").T
+
+    @torch.no_grad()
+    def get_local_scale(self, as_list: bool = False):
+        """Get the local scales."""
+        return self._get_local_param("local_scale", as_list=as_list)
+
+    @torch.no_grad()
+    def get_caux(self, as_list: bool = False):
+        """Get the c auxiliaries."""
+        return self._get_local_param("caux", as_list=as_list)
+
+    @torch.no_grad()
+    def get_w(self, as_list: bool = False):
+        """Get the factor loadings."""
+        return self._get_local_param("w", as_list=as_list)
+
+    @torch.no_grad()
+    def get_beta(self, as_list: bool = False):
+        """Get the beta coefficients."""
+        return self._get_local_param("beta", as_list=as_list)
+
+    @torch.no_grad()
+    def get_z(self):
+        """Get the factor scores."""
+        return self._get_param("z")
+
+    @torch.no_grad()
+    def get_sigma(self, as_list: bool = False):
+        """Get the marginal feature scales."""
+        return self._get_local_param("sigma", as_list=as_list)
+
+
+class MuVIModel(PyroModule):
+    def __init__(
+        self,
+        n_samples: int,
+        n_subsamples: int,
+        n_features: List[int],
+        n_factors: int,
+        n_covariates: int,
+        likelihoods: List[str],
+        global_prior_scale: float = 1.0,
+        device: bool = None,
+    ):
+        """MuVI generative model.
 
         Parameters
         ----------
         n_samples : int
-            Number of samples to generate
-        data : torch.Tensor, optional
-            Observations to condition the model on,
-            needed during inference,
+            Number of samples
+        n_subsamples : int
+            Number of subsamples (batch size)
+        n_features : List[int]
+            Number of features as list for each view
+        n_factors : int
+            Number of latent factors
+        n_covariates : int
+            Number of covariates
+        likelihoods : List[str], optional
+            List of likelihoods for each view,
+            either 'normal' or 'bernoulli', by default None
+        global_prior_scale : float, optional
+            Determine the level of global sparsity, by default 1.0
+        """
+        super().__init__(name="MuVIModel")
+        self.n_samples = n_samples
+        self.n_subsamples = n_subsamples
+        self.n_features = n_features
+        self.feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+        self.n_views = len(self.n_features)
+        self.n_factors = n_factors
+        self.n_covariates = n_covariates
+        self.likelihoods = likelihoods
+        self.global_prior_scale = (
+            1.0 if global_prior_scale is None else global_prior_scale
+        )
+
+        self.device = device
+        self._plates = None
+
+    @property
+    def plates(self):
+        """Get the sampling plates.
+
+        Returns
+        -------
+        dict
+        """
+        if self._plates is None:
+            plates = {
+                "view": pyro.plate("view", self.n_views, dim=-1),
+                "factor": pyro.plate("factor", self.n_factors, dim=-2),
+                "feature": pyro.plate("feature", sum(self.n_features), dim=-1),
+                "sample": pyro.plate(
+                    "sample",
+                    self.n_samples,
+                    subsample_size=self.n_subsamples,
+                    dim=-2,
+                ),
+            }
+            if self.n_covariates > 0:
+                plates["covariate"] = pyro.plate("covariate", self.n_covariates, dim=-2)
+            self._plates = plates
+
+        return self._plates
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        mask: torch.Tensor,
+        covs: torch.Tensor = None,
+        prior_scales: torch.Tensor = None,
+    ):
+        """Generate samples.
+
+        Parameters
+        ----------
+        obs : torch.Tensor
+            Observations to condition the model on
+        mask : torch.Tensor
+            Binary mask of missing data
+        covs : torch.Tensor, optional
+            Additional covariate matrix, by default None
+        prior_scales : torch.Tensor, optional
+            Local prior scales with prior information,
             by default None
 
         Returns
         -------
         dict
-            Dictonary of the random variables of the model
+            Samples from each sampling site
         """
 
-        plates = self.get_plates(n_samples, min(n_samples, self.batch_size))
+        output_dict = {}
+        plates = self.plates
 
-        global_scale = pyro.sample("global_scale", dist.HalfCauchy(torch.ones(1)))
-
-        factor_scale = torch.ones(1)
-        with plates["factor"]:
-            if self.factor_scale_on:
-                factor_scale = pyro.sample(
-                    "factor_scale", dist.HalfCauchy(torch.ones(1))
-                )
-
-            with plates["feature"]:
-                local_scale = pyro.sample("local_scale", dist.HalfCauchy(torch.ones(1)))
-
-                slab_scale_variance = pyro.sample(
-                    "slab_scale_variance",
-                    dist.InverseGamma(0.5 * torch.ones(1), 0.5 * torch.ones(1)),
-                )
-                c = torch.sqrt(slab_scale_variance)
-
-                if self.local_prior_scales is not None:
-                    c = c * self.local_prior_scales
-                local_scale = (c * local_scale) / (c + global_scale * local_scale)
-                w = pyro.sample(
-                    "w",
-                    dist.Normal(
-                        torch.zeros(1),
-                        local_scale
-                        * factor_scale
-                        * global_scale
-                        * self.global_prior_scale,
-                    ),
+        with plates["view"]:
+            output_dict["view_scale"] = pyro.sample(
+                "view_scale", dist.HalfCauchy(torch.ones(1, device=self.device))
+            )
+            with plates["factor"]:
+                output_dict["factor_scale"] = pyro.sample(
+                    "factor_scale",
+                    dist.HalfCauchy(torch.ones(1, device=self.device)),
                 )
 
         with plates["feature"]:
-            precision = pyro.sample(
-                "precision",
-                dist.Gamma(torch.ones(1), torch.ones(1)),
+            with plates["factor"]:
+                output_dict["local_scale"] = pyro.sample(
+                    "local_scale",
+                    dist.HalfCauchy(torch.ones(1, device=self.device)),
+                )
+                output_dict["caux"] = pyro.sample(
+                    "caux",
+                    dist.InverseGamma(
+                        0.5 * torch.ones(1, device=self.device),
+                        0.5 * torch.ones(1, device=self.device),
+                    ),
+                )
+                slab_scale = 1.0 if prior_scales is None else prior_scales
+                c = slab_scale * torch.sqrt(output_dict["caux"])
+                lmbda = torch.cat(
+                    [
+                        (
+                            output_dict["local_scale"][
+                                ...,
+                                self.feature_offsets[m] : self.feature_offsets[m + 1],
+                            ]
+                            * output_dict["factor_scale"][..., m : m + 1]
+                            * output_dict["view_scale"][..., m : m + 1]
+                        )
+                        for m in range(self.n_views)
+                    ],
+                    -1,
+                )
+
+                output_dict["w"] = pyro.sample(
+                    "w",
+                    dist.Normal(
+                        torch.zeros(1, device=self.device),
+                        (self.global_prior_scale * c * lmbda)
+                        / torch.sqrt(c ** 2 + lmbda ** 2),
+                    ),
+                )
+
+            if self.n_covariates > 0:
+                with plates["covariate"]:
+                    output_dict["beta"] = pyro.sample(
+                        "beta",
+                        dist.Normal(
+                            torch.zeros(1, device=self.device),
+                            torch.ones(1, device=self.device),
+                        ),
+                    )
+
+            output_dict["sigma"] = pyro.sample(
+                "sigma",
+                dist.InverseGamma(
+                    torch.ones(1, device=self.device),
+                    torch.ones(1, device=self.device),
+                ),
             )
 
         with plates["sample"] as indices:
-
-            x = pyro.sample(
-                "x",
-                dist.Normal(torch.zeros(self.n_factors), torch.ones(self.n_factors)),
+            output_dict["z"] = pyro.sample(
+                "z",
+                dist.Normal(
+                    torch.zeros(self.n_factors, device=self.device),
+                    torch.ones(self.n_factors, device=self.device),
+                ),
             )
 
-            samples = data
-            samples_mask = True
-            if samples is not None:
-                indices = indices.to(samples.device)
-                samples = samples.index_select(0, indices)
-                samples_mask = self.presence_mask.index_select(0, indices)
+            if self.n_subsamples < self.n_samples:
+                indices = indices.to(self.device)
+                obs = obs.index_select(0, indices)
+                mask = mask.index_select(0, indices)
+                covs = covs.index_select(0, indices)
 
-                if self.use_cuda:
-                    samples = samples.cuda()
-                    samples_mask = samples_mask.cuda()
-
-            if self.likelihood == "normal":
-                y_dist = dist.Normal(torch.mm(x, w), 1.0 / torch.sqrt(precision))
+            # TODO! extend to multiple different likelihoods
+            y_loc = torch.matmul(output_dict["z"], output_dict["w"])
+            if self.n_covariates > 0:
+                y_loc = y_loc + torch.matmul(covs, output_dict["beta"])
+            if self.likelihoods[0] == "normal":
+                y_dist = dist.Normal(y_loc, torch.sqrt(output_dict["sigma"]))
             else:
-                y_dist = dist.Bernoulli(logits=torch.mm(x, w))
-            with pyro.poutine.mask(mask=samples_mask):
-                y = pyro.sample(
+                y_dist = dist.Bernoulli(logits=y_loc)
+            with pyro.poutine.mask(mask=mask):
+                output_dict["y"] = pyro.sample(
                     "y",
                     y_dist,
-                    obs=samples,
+                    obs=obs,
                     infer={"is_auxiliary": True},
                 )
+        return output_dict
 
-        return {
-            "global_scale": global_scale,
-            "factor_scale": factor_scale,
-            "local_scale": local_scale,
-            "w": w,
-            "x": x,
-            "y": y,
-            "precision": precision,
-        }
 
-    def fill_adata(self):
-        """Fill AnnData object after training terminates.
+class MuVIGuide(PyroModule):
+    def __init__(
+        self,
+        model,
+        init_loc: float = 0.0,
+        init_scale: float = 0.1,
+        device=None,
+    ):
+        """Approximate posterior.
+
+        Parameters
+        ----------
+        model : object
+            A MuVIModel object
+        init_loc : float, optional
+            Initial value for loc parameters, by default 0.0
+        init_scale : float, optional
+            Initial value for scale parameters, by default 0.1
+        """
+        super().__init__(name="MuVIGuide")
+        self.model = model
+        self.locs = PyroModule()
+        self.scales = PyroModule()
+
+        self.init_loc = init_loc
+        self.init_scale = init_scale
+        self.device = device
+
+        self.setup()
+
+    def _get_loc_and_scale(self, name: str):
+        """Get loc and scale parameters.
+
+        Parameters
+        ----------
+        name : str
+            Name of the sampling site
 
         Returns
         -------
-        ad.AnnData
-            An updated version of self.adata
-
-        Raises
-        ------
-        AttributeError
-            Raised when an AnnData object was not passed during build
+        tuple
+            Tuple of (loc, scale)
         """
-        if self.adata is None:
-            raise AttributeError(
-                "Missing AnnData! No AnnData object passed during build."
+        site_loc = deep_getattr(self.locs, name)
+        site_scale = deep_getattr(self.scales, name)
+        return site_loc, site_scale
+
+    def setup(self):
+        """Setup parameters and sampling sites."""
+        n_features = sum(self.model.n_features)
+        n_views = self.model.n_views
+        n_factors = self.model.n_factors
+
+        site_to_shape = {
+            "z": (self.model.n_samples, n_factors),
+            "view_scale": n_views,
+            "factor_scale": (n_factors, n_views),
+            "local_scale": (n_factors, n_features),
+            "caux": (n_factors, n_features),
+            "w": (n_factors, n_features),
+            "beta": (self.model.n_covariates, n_features),
+            "sigma": n_features,
+        }
+
+        for name, shape in site_to_shape.items():
+            deep_setattr(
+                self.locs,
+                name,
+                PyroParam(
+                    self.init_loc * torch.ones(shape, device=self.device),
+                    constraints.real,
+                ),
+            )
+            deep_setattr(
+                self.scales,
+                name,
+                PyroParam(
+                    self.init_scale * torch.ones(shape, device=self.device),
+                    constraints.softplus_positive,
+                ),
             )
 
-        columns = (
-            self.adata.uns["pathway_names"]
-            + [f"SPARSE_{i}" for i in range(self.n_sparse)]
-            + [f"DENSE_{i}" for i in range(self.n_dense)]
-        )
-        self.adata.varm["W"] = pd.DataFrame(
-            self.get_w().T,
-            index=self.adata.var_names,
-            columns=columns,
-        )
-        self.adata.obsm["X"] = pd.DataFrame(
-            self.get_x(),
-            index=self.adata.obs_names,
-            columns=columns,
-        )
-        return self.adata
+    @torch.no_grad()
+    def mode(self, name: str):
+        """Get the MAP estimates.
+
+        Parameters
+        ----------
+        name : str
+            Name of the sampling site
+
+        Returns
+        -------
+        torch.Tensor
+            MAP estimate
+        """
+        loc, scale = self._get_loc_and_scale(name)
+        mode = loc
+        if name not in ["z", "w", "beta"]:
+            mode = (loc - scale.pow(2)).exp()
+        return mode.clone()
+
+    def _sample_normal(self, name: str):
+        return pyro.sample(name, dist.Normal(*self._get_loc_and_scale(name)))
+
+    def _sample_log_normal(self, name: str):
+        return pyro.sample(name, dist.LogNormal(*self._get_loc_and_scale(name)))
+
+    def forward(
+        self,
+        obs: torch.Tensor,
+        mask: torch.Tensor,
+        covs: torch.Tensor = None,
+        prior_scales: torch.Tensor = None,
+    ):
+        """Approximate posterior."""
+        output_dict = {}
+
+        plates = self.model.plates
+
+        with plates["view"]:
+            output_dict["view_scale"] = self._sample_log_normal("view_scale")
+            with plates["factor"]:
+                output_dict["factor_scale"] = self._sample_log_normal("factor_scale")
+
+        with plates["feature"]:
+            with plates["factor"]:
+                output_dict["local_scale"] = self._sample_log_normal("local_scale")
+                output_dict["caux"] = self._sample_log_normal("caux")
+                output_dict["w"] = self._sample_normal("w")
+
+            if self.model.n_covariates > 0:
+                with plates["covariate"]:
+                    output_dict["beta"] = self._sample_normal("beta")
+
+            output_dict["sigma"] = self._sample_log_normal("sigma")
+
+        with plates["sample"]:
+            output_dict["z"] = self._sample_normal("z")
+        return output_dict

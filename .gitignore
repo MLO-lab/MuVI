@@ -6,11 +6,14 @@
 .history/
 
 # Misc folders
+examples/*_results_*
 logs/
 data/
+dataset/
+scripts*/
 output/
 output_*/
-examples/*_results_*
+R/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
+sns.set_theme()
+sns.set_style("whitegrid")
+
 
 def save_figure(file_path, fmt="png", close_fig=False):
     """Save the last figure that was plotted."""
@@ -17,6 +20,23 @@ def save_figure(file_path, fmt="png", close_fig=False):
     )
     if close_fig:
         plt.close()
+
+
+def heatmap(data, figsize=(20, 10), annot=True, **kwargs):
+    """Generate a heatmap of a matrix."""
+    fig, ax = plt.subplots(figsize=figsize)  # Sample figsize in inches
+    return sns.heatmap(data, annot=annot, ax=ax, **kwargs)
+
+
+def lined_heatmap(
+    data, figsize=(20, 2), annot=False, hlines=None, vlines=None, **kwargs
+):
+    ax = heatmap(data, figsize, annot, **kwargs)
+    if hlines is not None:
+        ax.hlines(hlines, *ax.get_xlim(), linestyles="dashed")
+    if vlines is not None:
+        ax.vlines(vlines, *ax.get_ylim(), linestyles="dashed")
+    return ax
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
@@ -112,21 +132,3 @@ def plot_confusion_matrix(
         plt.title(title)
 
     return accuracy, precision, recall, f1_score
-
-
-def plot_factor_relevance(
-    df, xlabel, ylabel, order_by=None, top_k=20, fig_path=None, **kwargs
-):
-    if order_by is None:
-        order_by = xlabel
-    df = df.sort_values([order_by], ascending=True)
-    ax = sns.scatterplot(data=df.iloc[-top_k:], x=xlabel, y=ylabel, **kwargs)
-    if fig_path is not None:
-        title_parts = fig_path.split("/")[-1].split("_")
-        if title_parts[-1][-1] == ")":
-            title = " ".join(title_parts[2:])
-        else:
-            title = " ".join([title_part.capitalize() for title_part in title_parts])
-        ax.set_title(title)
-        save_figure(fig_path)
-    return ax

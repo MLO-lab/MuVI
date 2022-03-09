@@ -3,14 +3,14 @@ requires = ["poetry_core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "spexlvm"
+name = "muvi"
 version = "0.1.0"
-description = "spex-LVM, a factorial latent variable model with sparse priors to encourage the inference of explainable factors driven by domain-relevant information."
+description = "MuVI, a multi-view latent variable model with domain-informed structured sparsity, that integrates noisy domain expertise in terms of feature sets."
 readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
 # license = "MIT"
-repository = "https://github.com/MLO-lab/spexlvm"
-homepage = "https://github.com/MLO-lab/spexlvm"
+repository = "https://github.com/MLO-lab/MuVI"
+homepage = "https://github.com/MLO-lab/MuVI"
 
 # Pypi classifiers: https://pypi.org/classifiers/
 classifiers = []
@@ -22,10 +22,6 @@ pandas = ">=1.0"
 scikit-learn = ">=0.24"
 pyro-ppl = ">=1.8.0"
 torch = ">=1.9.0"
-torchvision = "^0.10.0"
-scanpy = "^1.8.2"
-gsea-api = ">=0.3.4"
-h5py = ">=3.3.0"
 seaborn = ">=0.11"
 tqdm = ">=4.61.1"
 pytest = { version = "^6.2.5", optional = true }

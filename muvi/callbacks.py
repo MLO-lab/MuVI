@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 from sklearn.metrics import mean_squared_error
 
-from spexlvm.utils import compute_cf_scores_at
+from muvi.utils import compute_cf_scores_at
 
 
 class CheckpointCallback:

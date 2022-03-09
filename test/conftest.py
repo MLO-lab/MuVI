@@ -1,6 +1,6 @@
 import pytest
 
-from spexlvm import data
+from muvi import data
 
 
 @pytest.fixture(scope="function")

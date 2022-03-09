@@ -94,8 +94,7 @@ def test_missing_y_partial_samples(data_gen):
         0.0,
     )
 
-    missing_y = data_gen.y_to_matrix(missing=True)
-    assert n_partial_samples == (np.isnan(missing_y).mean(1) > 0.0).sum()
+    assert n_partial_samples == (np.isnan(data_gen.missing_y).mean(1) > 0.0).sum()
 
 
 def test_missing_y_partial_features(data_gen):
@@ -111,8 +110,9 @@ def test_missing_y_partial_features(data_gen):
         missing_fraction_partial_features,
     )
 
-    missing_y = data_gen.y_to_matrix(missing=True)
     assert (
         n_partial_features
-        == (np.isnan(missing_y).mean(0) == missing_fraction_partial_features).sum()
+        == (
+            np.isnan(data_gen.missing_y).mean(0) == missing_fraction_partial_features
+        ).sum()
     )

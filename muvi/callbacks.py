@@ -1,4 +1,4 @@
-"""Definition of the sparse factor analysis as a pyro module."""
+"""Collection of MuVI callbacks."""
 from collections import defaultdict
 
 import numpy as np

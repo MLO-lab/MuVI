@@ -1,7 +1,8 @@
 import logging
-from typing import Callable, List
+from typing import Callable, List, Union
 
 import numpy as np
+import pandas as pd
 import pyro
 import pyro.distributions as dist
 import torch
@@ -18,8 +19,9 @@ class MuVI(PyroModule):
     def __init__(
         self,
         n_factors: int,
-        observations: np.ndarray,
-        covariates: np.ndarray = None,
+        observations: List[Union[np.ndarray, pd.DataFrame]],
+        view_names: List[str] = None,
+        covariates: Union[np.ndarray, pd.DataFrame] = None,
         likelihoods: List[str] = None,
         use_gpu: bool = True,
         **kwargs,
@@ -30,9 +32,11 @@ class MuVI(PyroModule):
         ----------
         n_factors : int
             Number of latent factors
-        observations : np.ndarray
-            N x D matrix of observations
-        covariates : np.ndarray
+        observations : List[Union[np.ndarray, pd.DataFrame]]
+            List of M N x D matrices of observations
+        view_names : List[str]
+            List of names for each view
+        covariates : Union[np.ndarray, pd.DataFrame]
             N x P matrix of covariates
         likelihoods : List[str], optional
             List of likelihoods for each view,
@@ -55,17 +59,95 @@ class MuVI(PyroModule):
 
         if observations is None:
             raise ValueError(
-                "Object observations is None, please pass a valid list of observations."
+                "Observations is None, please pass a valid list of observations."
             )
         if not isinstance(observations, list):
             observations = [observations]
         if len(observations) == 1:
             logger.warning("Running MuVI on a single view.")
 
-        self.n_samples = observations[0].shape[0]
-        self.n_features = [y.shape[1] for y in observations]
-        self.feature_offsets = [0] + np.cumsum(self.n_features).tolist()
-        self.n_views = len(self.n_features)
+        self.observations = self._setup_observations(observations, view_names)
+        self.likelihoods = self._setup_likelihoods(likelihoods)
+        self.covariates = self._setup_covariates(covariates)
+
+        self.device = torch.device("cpu")
+        if use_gpu and torch.cuda.is_available():
+            logger.info("GPU available, running all computations on the GPU.")
+            self.device = torch.device("cuda")
+        self.to(self.device)
+
+        self.kwargs = kwargs
+
+        self.factor_names = None
+        self.prior_masks = None
+        self.prior_scales = None
+        self.model = None
+        self.guide = None
+        self._is_built = False
+
+    def _setup_observations(self, observations, view_names):
+
+        n_samples = observations[0].shape[0]
+        sample_names = None
+        n_features = []
+        feature_offsets = [0]
+        feature_names = []
+        numpy_observations = []
+        for m, y in enumerate(observations):
+            if y.shape[0] != n_samples:
+                raise ValueError(
+                    f"View {m} has {y.shape[0]} samples instead of {n_samples}, "
+                    "all views must have the same number of samples."
+                )
+            n_features.append(y.shape[1])
+            feature_offsets.append(feature_offsets[-1] + n_features[-1])
+
+            if isinstance(y, pd.DataFrame):
+                logger.info("pd.DataFrame detected.")
+
+                new_sample_names = y.index.tolist()
+                if sample_names is None:
+                    logger.info(
+                        "Storing the index of the first view "
+                        "as sample names and columns "
+                        "of each dataframe feature names."
+                    )
+                    sample_names = new_sample_names
+                if sample_names != new_sample_names:
+                    logger.info(
+                        "Sample names for view %s "
+                        "do not match the sample names of view 0, "
+                        "sorting names according to view 0.",
+                        m,
+                    )
+                    y = y.loc[sample_names, :]
+                feature_names.append(y.columns.tolist())
+                numpy_observations.append(y.to_numpy())
+            else:
+                feature_names.append(None)
+                numpy_observations.append(y)
+
+        observations = numpy_observations
+
+        n_views = len(n_features)
+        if view_names is None:
+            view_names = list(range(n_views))
+        if sample_names is None:
+            sample_names = list(range(n_samples))
+        for m in range(n_views):
+            if feature_names[m] is None:
+                feature_names[m] = list(range(n_features[m]))
+        self.n_samples = n_samples
+        self.sample_names = sample_names
+        self.n_features = n_features
+        self.feature_offsets = feature_offsets
+        self.feature_names = feature_names
+        self.n_views = n_views
+        self.view_names = view_names
+
+        return observations
+
+    def _setup_likelihoods(self, likelihoods):
 
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
@@ -75,42 +157,57 @@ class MuVI(PyroModule):
                 "using %s for all views.",
                 likelihoods[0],
             )
-        self.likelihoods = likelihoods
+        return likelihoods
 
-        self.observations = observations
+    def _setup_covariates(self, covariates):
 
-        self.n_covariates = 0
+        n_covariates = 0
         if covariates is not None:
-            self.n_covariates = covariates.shape[1]
-        self.covariates = covariates
+            n_covariates = covariates.shape[1]
 
-        self.device = torch.device("cpu")
-        if use_gpu and torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        self.to(self.device)
+        covariate_names = None
+        if isinstance(covariates, pd.DataFrame):
+            logger.info("pd.DataFrame detected.")
+            if self.n_samples != covariates.shape[0]:
+                raise ValueError(
+                    f"Number of observed samples for ({self.n_samples}) "
+                    "does not match the number of samples "
+                    f"for the covariates ({covariates.shape[0]})."
+                )
 
-        self.kwargs = kwargs
+            if self.sample_names != covariates.index.tolist():
+                logger.info(
+                    "Sample names for the covariates "
+                    "do not match the sample names of the observations, "
+                    "sorting names according to the observations."
+                )
+                covariates = covariates.loc[self.sample_names, :]
+            covariate_names = covariates.columns.tolist()
+            covariates = covariates.to_numpy()
+        if covariate_names is None:
+            covariate_names = list(range(n_covariates))
 
-        self.prior_scales = None
-        self.model = None
-        self.guide = None
-        self._is_built = False
+        self.n_covariates = n_covariates
+        self.covariate_names = covariate_names
+        return covariates
 
-    def add_prior_mask(self, mask: np.ndarray, confidence: float = 0.99):
+    def add_prior_masks(
+        self, masks: List[Union[np.ndarray, pd.DataFrame]], confidence: float = 0.99
+    ):
         """Generate local prior scales given a mask of feature sets.
 
         Parameters
         ----------
-        mask : np.ndarray
-            K x D binary matrix of prior feature sets
+        masks : List[Union[np.ndarray, pd.DataFrame]]
+            List of M K x D binary matrices of prior feature sets
         confidence : float, optional
             Confidence of the prior belief, larger more confident
             typical values 0.9, 0.95, 0.99, 0.999, by default 0.99
         """
-        n_prior_factors = len(mask[0])
+        n_prior_factors = len(masks[0])
         if n_prior_factors > self.n_factors:
             logger.warning(
-                "Prior mask informs more factors than pre-defined `n_factors`. "
+                "Prior mask informs more factors than the pre-defined `n_factors`. "
                 "Updating `n_factors` to %s.",
                 n_prior_factors,
             )
@@ -118,19 +215,65 @@ class MuVI(PyroModule):
 
         if n_prior_factors < self.n_factors:
             logger.warning(
-                "Prior mask informs fewer factors than pre-defined `n_factors`. "
+                "Prior mask informs fewer factors than the pre-defined `n_factors`. "
                 "Informing only the first %s factors.",
                 n_prior_factors,
             )
-
+        factor_names = None
+        prior_masks = []
         prior_scales = []
-        for m, view_mask in enumerate(mask):
+        for m, view_mask in enumerate(masks):
+            if view_mask.shape[0] != self.n_factors:
+                raise ValueError(
+                    f"Mask {m} has {view_mask.shape[0]} factors "
+                    f"instead of {self.n_factors}, "
+                    "all masks must have the same number of factors."
+                )
+
+            if view_mask.shape[1] != self.n_features[m]:
+                raise ValueError(
+                    f"Mask {m} has {view_mask.shape[1]} features "
+                    f"instead of {self.n_features[m]}, "
+                    "each mask must match the number of features of its view."
+                )
+            if isinstance(view_mask, pd.DataFrame):
+                logger.info("pd.DataFrame detected.")
+
+                new_factor_names = view_mask.index.tolist()
+                if factor_names is None:
+                    logger.info("Storing the index of the first mask as factor names.")
+                    factor_names = new_factor_names
+                if factor_names != new_factor_names:
+                    logger.info(
+                        "Factor names for mask %s "
+                        "do not match the factor names of mask 0, "
+                        "sorting names according to mask 0.",
+                        m,
+                    )
+                    view_mask = view_mask.loc[factor_names, :]
+
+                if (
+                    self.feature_names[m] is not None
+                    and self.feature_names[m] != view_mask.columns.tolist()
+                ):
+                    logger.info(
+                        "Feature names for mask %s "
+                        "do not match the feature names of its corresponding view, "
+                        "sorting names according to the view features.",
+                        m,
+                    )
+                    view_mask = view_mask.loc[:, self.feature_names[m]]
             view_prior_scales = np.ones((self.n_factors, self.n_features[m]))
             view_prior_scales[: self.n_factors, :] = np.clip(
                 view_mask.astype(np.float32) + (1.0 - confidence), 1e-4, 1.0
             )
+            prior_masks.append(view_mask)
             prior_scales.append(view_prior_scales)
 
+        if factor_names is None:
+            factor_names = list(range(self.n_factors))
+        self.factor_names = factor_names
+        self.prior_masks = prior_masks
         self.prior_scales = prior_scales
 
     def _setup_model_guide(self, batch_size: int):
@@ -248,7 +391,7 @@ class MuVI(PyroModule):
             Tuple of (obs, mask, covs, prior_scales)
         """
         train_obs = torch.cat(
-            [torch.Tensor(view).to(self.device) for view in self.observations], 1
+            [torch.Tensor(y).to(self.device) for y in self.observations], 1
         )
         mask_obs = ~torch.isnan(train_obs)
         # replace all nans with zeros
@@ -308,9 +451,9 @@ class MuVI(PyroModule):
             batch_size = self.n_samples
 
         if batch_size < self.n_samples:
-            logger.info("Using batches of size %s", batch_size)
+            logger.info("Using batches of size %s.", batch_size)
         else:
-            logger.info("Using complete dataset")
+            logger.info("Using complete dataset.")
 
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
@@ -586,7 +729,7 @@ class MuVIModel(PyroModule):
                     dist.Normal(
                         torch.zeros(1, device=self.device),
                         (self.global_prior_scale * c * lmbda)
-                        / torch.sqrt(c**2 + lmbda**2),
+                        / torch.sqrt(c ** 2 + lmbda ** 2),
                     ),
                 )
 

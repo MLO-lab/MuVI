@@ -1,12 +1,6 @@
 import os
-import time
 
 import numpy as np
-
-
-def generate_filename() -> str:
-    """Create unique filename"""
-    return time.strftime("%Y%m%d-%H%M%S")
 
 
 def get_free_gpu_idx():

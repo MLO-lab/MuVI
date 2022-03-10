@@ -7,9 +7,9 @@
 
 # Misc folders
 examples/*_results_*
+examples/dlbcl/
 logs/
-data/
-dataset/
+datasets/
 scripts*/
 output/
 output_*/

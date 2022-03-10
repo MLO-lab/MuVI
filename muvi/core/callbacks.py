@@ -2,9 +2,59 @@
 from collections import defaultdict
 
 import numpy as np
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, precision_recall_fscore_support
 
-from muvi.utils import compute_cf_scores_at
+
+class EarlyStoppingCallback:
+    def __init__(
+        self,
+        n_iterations,
+        min_iterations=1000,
+        window_size=10,
+        tolerance=1e-3,
+        patience=1,
+    ):
+        self.n_iterations = n_iterations
+        self.min_iterations = min_iterations
+        self.tolerance = tolerance
+        self.patience = patience
+
+        self.window_size = window_size
+        self.early_stop_counter = 0
+        self.min_avg_loss = np.inf
+
+    def __call__(self, loss_history):
+        stop_early = False
+
+        iteration_idx = len(loss_history) - 1
+
+        if (
+            iteration_idx % self.window_size == 0
+            and iteration_idx > self.min_iterations
+        ):
+            current_window_avg_loss = np.mean(loss_history[-self.window_size :])
+
+            relative_improvement = (
+                self.min_avg_loss - current_window_avg_loss
+            ) / np.abs(current_window_avg_loss)
+
+            self.min_avg_loss = min(current_window_avg_loss, self.min_avg_loss)
+
+            if relative_improvement < self.tolerance:
+                self.early_stop_counter += 1
+            else:
+                self.early_stop_counter = 0
+
+            stop_early = self.early_stop_counter >= self.patience
+
+            if stop_early:
+                print(
+                    f"Relative improvement of "
+                    f"{relative_improvement:0.4g} < {self.tolerance:0.4g} "
+                    f"for {self.patience} step(s) in a row, stopping early."
+                )
+
+        return stop_early
 
 
 class CheckpointCallback:
@@ -151,21 +201,20 @@ class LogCallback:
             print(
                 "Binary scores between prior mask and learned activations "
                 f"with a threshold of {threshold} for top {at} (abs) weights:"
-                f"\nview #: (acc, prec, rec, f1)"
+                f"\nview #: (prec, rec, f1)"
             )
             if self.view_wise:
                 informed_views = self.kwargs.get(
                     "informed_views", range(self.model.n_views)
                 )
                 for m in informed_views:
-                    acc, prec, rec, f1 = compute_cf_scores_at(
+                    prec, rec, f1, _ = compute_binary_scores_at(
                         mask[m][:n_annotated, :],
                         self.w[m][:n_annotated, :],
                         threshold=threshold,
                         at=at,
                     )
-                    print(f"view {m}: ({acc:.3f}, {prec:.3f}, {rec:.3f}, {f1:.3f})")
-                    self.scores[f"accuracy_{m}"].append(acc)
+                    print(f"view {m}: ({prec:.3f}, {rec:.3f}, {f1:.3f})")
                     self.scores[f"precision_{m}"].append(prec)
                     self.scores[f"recall_{m}"].append(rec)
                     self.scores[f"f1_{m}"].append(f1)
@@ -197,53 +246,24 @@ class LogCallback:
         return False
 
 
-class EarlyStoppingCallback:
-    def __init__(
-        self,
-        n_iterations,
-        min_iterations=1000,
-        window_size=10,
-        tolerance=1e-3,
-        patience=1,
-    ):
-        self.n_iterations = n_iterations
-        self.min_iterations = min_iterations
-        self.tolerance = tolerance
-        self.patience = patience
+def compute_binary_scores_at(true_mask, learned_w, threshold=0.05, at=None):
+    if at is None:
+        at = true_mask.shape[1]
 
-        self.window_size = window_size
-        self.early_stop_counter = 0
-        self.min_avg_loss = np.inf
+    learned_w_abs = np.abs(learned_w)
+    # descending order
+    argsort_indices = np.argsort(-learned_w_abs, axis=1)
 
-    def __call__(self, loss_history):
-        stop_early = False
+    sorted_true_mask = np.array(
+        list(map(lambda x, y: y[x], argsort_indices, true_mask))
+    )
+    sorted_learned_mask = (
+        np.array(list(map(lambda x, y: y[x], argsort_indices, learned_w_abs)))
+        > threshold
+    )
+    sorted_true_mask = sorted_true_mask[:, :at].flatten()
+    sorted_learned_mask = sorted_learned_mask[:, :at].flatten()
 
-        iteration_idx = len(loss_history) - 1
-
-        if (
-            iteration_idx % self.window_size == 0
-            and iteration_idx > self.min_iterations
-        ):
-            current_window_avg_loss = np.mean(loss_history[-self.window_size :])
-
-            relative_improvement = (
-                self.min_avg_loss - current_window_avg_loss
-            ) / np.abs(current_window_avg_loss)
-
-            self.min_avg_loss = min(current_window_avg_loss, self.min_avg_loss)
-
-            if relative_improvement < self.tolerance:
-                self.early_stop_counter += 1
-            else:
-                self.early_stop_counter = 0
-
-            stop_early = self.early_stop_counter >= self.patience
-
-            if stop_early:
-                print(
-                    f"Relative improvement of "
-                    f"{relative_improvement:0.4g} < {self.tolerance:0.4g} "
-                    f"for {self.patience} step(s) in a row, stopping early."
-                )
-
-        return stop_early
+    return precision_recall_fscore_support(
+        sorted_true_mask, sorted_learned_mask, average="binary"
+    )

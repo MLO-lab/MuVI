@@ -24,7 +24,7 @@ def save_figure(file_path, fmt="png", close_fig=False):
 
 def heatmap(data, figsize=(20, 10), annot=True, **kwargs):
     """Generate a heatmap of a matrix."""
-    fig, ax = plt.subplots(figsize=figsize)  # Sample figsize in inches
+    fig, ax = plt.subplots(figsize=figsize)
     return sns.heatmap(data, annot=annot, ax=ax, **kwargs)
 
 
@@ -40,7 +40,7 @@ def lined_heatmap(
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
-def plot_confusion_matrix(
+def confusion_matrix(
     cf,
     group_names=None,
     categories="auto",

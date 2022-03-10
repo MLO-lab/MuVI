@@ -79,6 +79,22 @@ class Pathways(GeneSets):
 
         return info
 
+    def merge_duplicates(self):
+        unique_gene_sets = {}
+        for current_gs in self.gene_sets:
+            cgsn = current_gs.name
+            if cgsn in unique_gene_sets:
+                existing_gs = unique_gene_sets[cgsn]
+                new_gs = GeneSet(
+                    name=cgsn,
+                    genes=frozenset().union(*[existing_gs.genes, current_gs.genes]),
+                )
+                unique_gene_sets[cgsn] = new_gs
+            else:
+                unique_gene_sets[cgsn] = current_gs
+
+        return Pathways(unique_gene_sets.values())
+
     def find(self, partial_gene_set_names: Iterable[str]):
         """Perform a simple search given a list of (partial) gene set names.
 
@@ -310,7 +326,7 @@ def load_pathways(
         remove = []
 
     # load msigdb files located at ./msigdb (.gmt extension)
-    msigdb = MolecularSignaturesDatabase(config.MSIGDB_DIR, version=7.5)
+    msigdb = MolecularSignaturesDatabase(config.MSIGDB_DIR, version="7.5.1")
 
     all_gene_sets = tuple()
     size_dfs = []
@@ -324,11 +340,19 @@ def load_pathways(
             min_gene_count[i],
         )
 
-        gene_sets = msigdb.load(c, id_type="symbols")
+        gene_sets = msigdb.load(c, id_type="symbols").gene_sets
 
         if len(genes) > 0:
-            gene_sets = Pathways(gene_sets).subset(
-                genes, fraction_available[i], min_gene_count[i], max_gene_count[i], keep
+            gene_sets = (
+                Pathways(gene_sets)
+                .subset(
+                    genes,
+                    fraction_available[i],
+                    min_gene_count[i],
+                    max_gene_count[i],
+                    keep,
+                )
+                .gene_sets
             )
 
         size_dfs.append(

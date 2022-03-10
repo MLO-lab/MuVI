@@ -3,6 +3,7 @@ from collections import defaultdict
 
 import numpy as np
 from sklearn.metrics import mean_squared_error, precision_recall_fscore_support
+from muvi.tools.utils import variance_explained
 
 
 class EarlyStoppingCallback:
@@ -85,6 +86,7 @@ class LogCallback:
         "sparsity",
         "binary_scores",
         "rmse",
+        "r2",
         "log",
     ]
 
@@ -132,6 +134,7 @@ class LogCallback:
                 "callback": self.binary_scores,
             },
             "rmse": {"n_checkpoints": self.n_checkpoints, "callback": self.rmse},
+            "r2": {"n_checkpoints": self.n_checkpoints, "callback": self.r2},
             "log": {
                 "n_checkpoints": self.kwargs.get("log_frequency", 100),
                 "callback": self.log,
@@ -220,7 +223,7 @@ class LogCallback:
                     self.scores[f"f1_{m}"].append(f1)
 
     def rmse(self):
-        y_true = self.kwargs["y_true"]
+        y_true = np.nan_to_num(self.kwargs["y_true"])
         rmses = []
         for m in range(self.model.n_views):
             y_pred = self.z @ self.w[m]
@@ -231,6 +234,16 @@ class LogCallback:
             self.scores[f"rmse_{m}"].append(rmse)
 
         print("Overall rmse for each view: ", " ".join(f"{rmse:.3f}" for rmse in rmses))
+
+    def r2(self):
+        _, r2_scores_acc = variance_explained(self.model, which="acc")
+        r2s = []
+        for m, r2_acc in enumerate(r2_scores_acc):
+            r2s.append(r2_acc)
+            self.scores[f"r2_{m}"].append(r2_acc)
+        print(
+            "Overall r2 score for each view: ", " ".join(f"{rmse:.3f}" for rmse in r2s)
+        )
 
     def log(self):
         if self.should_log:

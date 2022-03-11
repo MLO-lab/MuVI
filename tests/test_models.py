@@ -1,7 +1,7 @@
-import pytest
-from muvi import MuVI
 import numpy as np
-import pandas as pd
+import pytest
+
+from muvi import MuVI
 
 
 def test_numpy_input(data_gen):

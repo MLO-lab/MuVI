@@ -8,7 +8,6 @@ from gsea_api.molecular_signatures_db import (
     GeneSets,
     MolecularSignaturesDatabase,
 )
-from tqdm import tqdm
 
 from muvi.tools import config
 
@@ -106,7 +105,8 @@ class Pathways(GeneSets):
         Returns
         -------
         dict
-            Search results as a dictionary of {partial_gene_set_names[0]: [GeneSet], ...}
+            Search results as a dictionary of
+            {partial_gene_set_names[0]: [GeneSet], ...}
         """
         search_results = {partial_gsn: [] for partial_gsn in partial_gene_set_names}
         for partial_gsn in partial_gene_set_names:
@@ -210,7 +210,8 @@ class Pathways(GeneSets):
                 continue
             if gene_set.name in keep:
                 logger.info(
-                    "Keeping a %s out of %s genes (%.2f) from the special gene set '%s'.",
+                    "Keeping a %s out of %s genes (%.2f) "
+                    "from the special gene set '%s'.",
                     available_genes,
                     len(gene_set.genes),
                     gene_fraction,

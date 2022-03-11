@@ -131,12 +131,14 @@ class MuVI(PyroModule):
 
         n_views = len(n_features)
         if view_names is None:
-            view_names = list(range(n_views))
+            view_names = [f"view_{m}" for m in range(n_views)]
         if sample_names is None:
-            sample_names = list(range(n_samples))
+            sample_names = [f"sample_{i}" for i in range(n_samples)]
         for m in range(n_views):
             if feature_names[m] is None:
-                feature_names[m] = list(range(n_features[m]))
+                feature_names[m] = [
+                    f"view_{m}_feature_{j}" for j in range(n_features[m])
+                ]
         self.n_samples = n_samples
         self.sample_names = sample_names
         self.n_features = n_features
@@ -185,7 +187,7 @@ class MuVI(PyroModule):
             covariate_names = covariates.columns.tolist()
             covariates = covariates.to_numpy()
         if covariate_names is None:
-            covariate_names = list(range(n_covariates))
+            covariate_names = [f"covariate_{k}" for k in range(n_covariates)]
 
         self.n_covariates = n_covariates
         self.covariate_names = covariate_names
@@ -271,10 +273,63 @@ class MuVI(PyroModule):
             prior_scales.append(view_prior_scales)
 
         if factor_names is None:
-            factor_names = list(range(self.n_factors))
+            factor_names = [f"factor_{k}" for k in range(self.n_factors)]
         self.factor_names = factor_names
         self.prior_masks = prior_masks
         self.prior_scales = prior_scales
+
+    def _param_as_df(self, param, index, columns):
+        return pd.DataFrame(param, index=index, columns=columns)
+
+    def get_observations(self, view_id, as_df=False):
+        if isinstance(view_id, str):
+            view_id = self.view_names.index(view_id)
+        obs = self.observations[view_id]
+        if as_df:
+            return self._param_as_df(
+                obs, self.sample_names, self.feature_names[view_id]
+            )
+        return obs
+
+    def get_covariates(self, as_df=False):
+        covs = self.covariates
+        if as_df:
+            return self._param_as_df(covs, self.sample_names, self.covariate_names)
+        return covs
+
+    def get_covariate_coefficients(self, view_id, as_df=False):
+        if isinstance(view_id, str):
+            view_id = self.view_names.index(view_id)
+        beta = self.get_beta(as_list=True)[view_id]
+        if as_df:
+            return self._param_as_df(
+                beta, self.covariate_names, self.feature_names[view_id]
+            )
+        return beta
+
+    def get_prior_mask(self, view_id, as_df=False):
+        if isinstance(view_id, str):
+            view_id = self.view_names.index(view_id)
+        mask = self.prior_masks[view_id]
+        if as_df:
+            return self._param_as_df(
+                mask, self.factor_names, self.feature_names[view_id]
+            )
+        return mask
+
+    def get_factor_scores(self, as_df=False):
+        z = self.get_z()
+        if as_df:
+            return self._param_as_df(z, self.sample_names, self.factor_names)
+        return z
+
+    def get_factor_loadings(self, view_id, as_df=False):
+        if isinstance(view_id, str):
+            view_id = self.view_names.index(view_id)
+        w = self.get_w(as_list=True)[view_id]
+        if as_df:
+            return self._param_as_df(w, self.factor_names, self.feature_names[view_id])
+        return w
 
     def _setup_model_guide(self, batch_size: int):
         """Setup model and guide.

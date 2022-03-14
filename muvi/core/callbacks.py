@@ -2,8 +2,8 @@
 from collections import defaultdict
 
 import numpy as np
-from sklearn.metrics import mean_squared_error, precision_recall_fscore_support
-from muvi.tools.utils import variance_explained
+from sklearn.metrics import precision_recall_fscore_support
+from muvi.tools.utils import rmse, variance_explained
 
 
 class EarlyStoppingCallback:
@@ -133,8 +133,11 @@ class LogCallback:
                 "n_checkpoints": self.n_checkpoints,
                 "callback": self.binary_scores,
             },
-            "rmse": {"n_checkpoints": self.n_checkpoints, "callback": self.rmse},
-            "r2": {"n_checkpoints": self.n_checkpoints, "callback": self.r2},
+            "rmse": {"n_checkpoints": self.n_checkpoints, "callback": self._rmse},
+            "r2": {
+                "n_checkpoints": self.n_checkpoints,
+                "callback": self._variance_explained,
+            },
             "log": {
                 "n_checkpoints": self.kwargs.get("log_frequency", 100),
                 "callback": self.log,
@@ -142,114 +145,86 @@ class LogCallback:
         }
 
     @property
-    def betas(self):
-        return self.model.get_beta(as_list=self.view_wise)
+    def factor_loadings(self):
+        return self.model.get_factor_loadings()
+
+    def get_activations(self, threshold):
+        return {vn: np.abs(w) > threshold for vn, w in self.factor_loadings.items()}
 
     @property
-    def w(self):
-        return self.model.get_w(as_list=self.view_wise)
-
-    def get_w_activations(self, threshold):
-        if self.view_wise:
-            return [np.abs(w) > threshold for w in self.w]
-        return np.abs(self.w) > threshold
+    def factor_scores(self):
+        return self.model.get_factor_scores()
 
     @property
-    def z(self):
-        return self.model.get_z()
-
-    @property
-    def factor_scale(self):
-        return self.model.get_factor_scale()
-
-    @property
-    def mask(self):
-        prior_scales = self.model.prior_scales
-        if prior_scales is None:
-            return None
-        return [ps >= 1.0 for ps in prior_scales]
-
-    @property
-    def sigma(self):
-        return self.model.get_sigma(as_list=self.view_wise)
+    def masks(self):
+        return self.kwargs.get("masks", self.model.get_prior_masks())
 
     def sparsity(self):
-        w_activations = self.get_w_activations(self.threshold)
-        frac_inactive = []
-        if self.view_wise:
-            frac_inactive = [1 - wa.mean() for wa in w_activations]
-        else:
-            frac_inactive = [1 - w_activations.mean()]
+        activations = self.get_activations(self.threshold)
+        frac_inactive = {vn: 1 - a.mean() for vn, a in activations.items()}
 
-        for m, fi in enumerate(frac_inactive):
-            self.scores[f"sparsity_{m}"].append(fi)
-
-        print(
-            "Average fraction of inactive loadings for each view: ",
-            " ".join(f"{fi:.3f}" for fi in frac_inactive),
-        )
+        str_result = "Average fraction of inactive loadings:\n"
+        for vn, fi in frac_inactive.items():
+            str_result += f"{vn}: {fi:.3f}, "
+            self.scores[f"sparsity_{vn}"].append(fi)
+        str_result = str_result[:-2]
+        print(str_result)
         return frac_inactive
 
     def binary_scores(self):
-        mask = self.kwargs.get("mask", self.mask)
+        masks = self.masks
         at = self.kwargs.get("binary_scores_at", 100)
 
-        if mask is None:
+        if masks is None:
             print("Mask is none...")
             return
 
         thresholds = [self.threshold]
         n_annotated = self.kwargs.get("n_annotated", self.model.n_factors)
         for threshold in thresholds:
-            print(
-                "Binary scores between prior mask and learned activations "
-                f"with a threshold of {threshold} for top {at} (abs) weights:"
-                f"\nview #: (prec, rec, f1)"
-            )
-            if self.view_wise:
-                informed_views = self.kwargs.get(
-                    "informed_views", range(self.model.n_views)
+            str_result = "Binary scores between prior mask and learned activations "
+            f"with a threshold of {threshold} for top {at} (abs) weights:"
+            "\n`view_name`: (prec, rec, f1)"
+
+            informed_views = self.kwargs.get("informed_views", self.model.view_names)
+            for vn in informed_views:
+                if isinstance(vn, int):
+                    vn = self.model.view_names[vn]
+                prec, rec, f1, _ = compute_binary_scores_at(
+                    masks[vn][:n_annotated, :],
+                    self.factor_loadings[vn][:n_annotated, :],
+                    threshold=threshold,
+                    at=at,
                 )
-                for m in informed_views:
-                    prec, rec, f1, _ = compute_binary_scores_at(
-                        mask[m][:n_annotated, :],
-                        self.w[m][:n_annotated, :],
-                        threshold=threshold,
-                        at=at,
-                    )
-                    print(f"view {m}: ({prec:.3f}, {rec:.3f}, {f1:.3f})")
-                    self.scores[f"precision_{m}"].append(prec)
-                    self.scores[f"recall_{m}"].append(rec)
-                    self.scores[f"f1_{m}"].append(f1)
+                self.scores[f"precision_{vn}"].append(prec)
+                self.scores[f"recall_{vn}"].append(rec)
+                self.scores[f"f1_{vn}"].append(f1)
+                str_result += f"view {vn}: ({prec:.3f}, {rec:.3f}, {f1:.3f})"
 
-    def rmse(self):
-        y_true = np.nan_to_num(self.kwargs["y_true"])
-        rmses = []
-        for m in range(self.model.n_views):
-            y_pred = self.z @ self.w[m]
-            if self.model.n_covariates > 0:
-                y_pred += self.model.covariates @ self.betas[m]
-            rmse = mean_squared_error(y_true[m], y_pred, squared=False)
-            rmses.append(rmse)
-            self.scores[f"rmse_{m}"].append(rmse)
+    def _rmse(self):
+        scores = rmse(self.model)[0]
+        str_result = "RMSE for each view:\n"
+        for vn, s in scores.items():
+            str_result += f"{vn}: {s:.3f}, "
+            self.scores[f"rmse_{vn}"].append(s)
+        str_result = str_result[:-2]
+        print(str_result)
+        return scores
 
-        print("Overall rmse for each view: ", " ".join(f"{rmse:.3f}" for rmse in rmses))
-
-    def r2(self):
-        _, r2_scores_acc = variance_explained(self.model, which="acc")
-        r2s = []
-        for m, r2_acc in enumerate(r2_scores_acc):
-            r2s.append(r2_acc)
-            self.scores[f"r2_{m}"].append(r2_acc)
-        print(
-            "Overall r2 score for each view: ", " ".join(f"{rmse:.3f}" for rmse in r2s)
-        )
+    def _variance_explained(self):
+        scores = variance_explained(self.model)[0]
+        str_result = "Variance explained for each view:\n"
+        for vn, s in scores.items():
+            str_result += f"{vn}: {s:.3f}, "
+            self.scores[f"r2_{vn}"].append(s)
+        str_result = str_result[:-2]
+        print(str_result)
+        return scores
 
     def log(self):
         if self.should_log:
-            self.ws.append(self.w)
-            self.zs.append(self.z)
-            self.fs.append(self.factor_scale)
+            self.ws.append(self.factor_loadings)
+            self.zs.append(self.factor_scores)
 
     def __call__(self, loss_history):
 

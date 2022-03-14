@@ -86,15 +86,6 @@ class DataGenerator:
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
         self.likelihoods = likelihoods
-        self.n_factors = (
-            self.n_fully_shared_factors
-            + self.n_partially_shared_factors
-            + self.n_private_factors
-        )
-
-        if n_active_factors <= 1.0:
-            # if fraction of active factors convert to int
-            n_active_factors = int(n_active_factors * self.n_factors)
 
         self.n_active_factors = n_active_factors
 
@@ -115,6 +106,14 @@ class DataGenerator:
         self.view_factor_mask = None
         # set when introducing missingness
         self.presence_masks = None
+
+    @property
+    def n_factors(self):
+        return (
+            self.n_fully_shared_factors
+            + self.n_partially_shared_factors
+            + self.n_private_factors
+        )
 
     def _to_matrix(self, matrix_list):
         return np.concatenate(matrix_list, axis=1)
@@ -182,6 +181,10 @@ class DataGenerator:
                 "generating all possible binary combinations of %s variables",
                 n_comb,
             )
+            self.n_fully_shared_factors = 1
+            self.n_private_factors = self.n_views
+            self.n_partially_shared_factors = 2**n_comb - 2 - self.n_private_factors
+
             return np.array(
                 [list(i) for i in itertools.product([1, 0], repeat=n_comb)]
             )[:-1, :].T
@@ -249,6 +252,21 @@ class DataGenerator:
             )
             return rng
 
+        view_factor_mask = self._generate_view_factor_mask(rng, n_comb)
+
+        n_active_factors = self.n_active_factors
+        if n_active_factors <= 1.0:
+            # if fraction of active factors convert to int
+            n_active_factors = int(n_active_factors * self.n_factors)
+
+        active_factor_indices = sorted(
+            rng.choice(
+                self.n_factors,
+                size=math.ceil(n_active_factors),
+                replace=False,
+            )
+        )
+
         # generate factor scores which lie in the latent space
         z = rng.standard_normal((self.n_samples, self.n_factors))
 
@@ -260,16 +278,6 @@ class DataGenerator:
         sigmas = []
         ys = []
         w_masks = []
-
-        view_factor_mask = self._generate_view_factor_mask(rng, n_comb)
-
-        active_factor_indices = sorted(
-            rng.choice(
-                self.n_factors,
-                size=math.ceil(self.n_active_factors),
-                replace=False,
-            )
-        )
 
         for factor_idx in range(self.n_factors):
             if factor_idx not in active_factor_indices:

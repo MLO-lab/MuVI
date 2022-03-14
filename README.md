@@ -10,7 +10,7 @@ git clone git@github.com:MLO-lab/MuVI.git
 ```
 2. Create a python environment in conda:
 ```bash
-conda create -n muvi python=3.9
+conda create -n muvi python=3.8
 ```
 3. Activate freshly created environment:
 ```bash

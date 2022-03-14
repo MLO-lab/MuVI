@@ -40,7 +40,7 @@ def test_w_mask(data_gen):
         w = data_gen.ws[m]
         w_mask = data_gen.w_masks[m]
         assert w.shape == w_mask.shape
-        assert ((np.abs(w) > 0.05) == w_mask).all()
+        assert ((np.abs(w) > 0.05) == w_mask.astype(bool)).all()
 
 
 def test_noisy_w_mask(data_gen):

@@ -1,20 +1,41 @@
 """Collection of MuVI callbacks."""
 from collections import defaultdict
+from typing import Callable, List
 
 import numpy as np
 from sklearn.metrics import precision_recall_fscore_support
+
 from muvi.tools.utils import rmse, variance_explained
 
 
 class EarlyStoppingCallback:
     def __init__(
         self,
-        n_iterations,
-        min_iterations=1000,
-        window_size=10,
-        tolerance=1e-3,
-        patience=1,
+        n_iterations: int,
+        min_iterations: int = 1000,
+        window_size: int = 10,
+        tolerance: float = 1e-3,
+        patience: int = 1,
     ):
+        """Early stopping callback.
+
+        Parameters
+        ----------
+        n_iterations : int
+            Number of training iterations
+        min_iterations : int, optional
+            Minimal number of iterations before deploying early stopping,
+            by default 1000
+        window_size : int, optional
+            Number of iterations before aggregating scores,
+            by default 10
+        tolerance : float, optional
+            Improvement ratio between two consecutive evaluations,
+            by default 1e-3
+        patience : int, optional
+            Number of patience steps before terminating training,
+            by default 1
+        """
         self.n_iterations = n_iterations
         self.min_iterations = min_iterations
         self.tolerance = tolerance
@@ -62,10 +83,25 @@ class CheckpointCallback:
     def __init__(
         self,
         model,
-        n_iterations,
-        n_checkpoints=10,
-        callback=None,
+        n_iterations: int,
+        n_checkpoints: int = 10,
+        callback: Callable = None,
     ):
+        """Checkpoint callback.
+
+        Parameters
+        ----------
+        model : MuVI
+            A MuVI object
+        n_iterations : int
+            Number of training iterations
+        n_checkpoints : int, optional
+            Number of times to execute during training,
+            by default 10
+        callback : Callable, optional
+            A function that accepts the loss history,
+            by default None
+        """
         self.model = model
         self.n_iterations = n_iterations
         self.n_checkpoints = n_checkpoints
@@ -93,12 +129,30 @@ class LogCallback:
     def __init__(
         self,
         model,
-        n_iterations,
-        n_checkpoints=10,
-        active_callbacks=None,
-        view_wise=True,
+        n_iterations: int,
+        n_checkpoints: int = 10,
+        active_callbacks: List[str] = None,
+        view_wise: bool = True,
         **kwargs,
     ) -> None:
+        """Log callback.
+
+        Parameters
+        ----------
+        model : MuVI
+            A MuVI object
+        n_iterations : int
+            Number of training iterations
+        n_checkpoints : int, optional
+            Number of times to execute during training,
+            by default 10
+        active_callbacks : List[str], optional
+            List of callback names from LogCallback._CALLBACK_KEYS,
+            by default None (all)
+        view_wise : bool, optional
+            Whether to report scores for each view,
+            by default True
+        """
         self.kwargs = kwargs
         self.model = model
         self.n_iterations = n_iterations
@@ -119,7 +173,6 @@ class LogCallback:
 
         self.ws = []
         self.zs = []
-        self.fs = []
         self.scores = defaultdict(list)
 
     @property
@@ -181,10 +234,13 @@ class LogCallback:
 
         thresholds = [self.threshold]
         n_annotated = self.kwargs.get("n_annotated", self.model.n_factors)
+
         for threshold in thresholds:
-            str_result = "Binary scores between prior mask and learned activations "
-            f"with a threshold of {threshold} for top {at} (abs) weights:"
-            "\n`view_name`: (prec, rec, f1)"
+            str_result = (
+                "Binary scores between prior mask and learned activations "
+                + f"with a threshold of {threshold} for top {at} (abs) weights:"
+                + "\n`view_name`: (prec, rec, f1)\n"
+            )
 
             informed_views = self.kwargs.get("informed_views", self.model.view_names)
             for vn in informed_views:
@@ -199,10 +255,17 @@ class LogCallback:
                 self.scores[f"precision_{vn}"].append(prec)
                 self.scores[f"recall_{vn}"].append(rec)
                 self.scores[f"f1_{vn}"].append(f1)
-                str_result += f"view {vn}: ({prec:.3f}, {rec:.3f}, {f1:.3f})"
+                str_result += f"{vn}: ({prec:.3f}, {rec:.3f}, {f1:.3f})\n"
+            str_result = str_result[:-1]
+            print(str_result)
 
     def _rmse(self):
-        scores = rmse(self.model)[0]
+        cov_idx = "all"
+        if self.model.n_covariates == 0:
+            cov_idx = None
+        scores = rmse(
+            self.model, cov_idx=cov_idx, factor_wise=False, cov_wise=False, cache=False
+        )[0]
         str_result = "RMSE for each view:\n"
         for vn, s in scores.items():
             str_result += f"{vn}: {s:.3f}, "
@@ -212,7 +275,12 @@ class LogCallback:
         return scores
 
     def _variance_explained(self):
-        scores = variance_explained(self.model)[0]
+        cov_idx = "all"
+        if self.model.n_covariates == 0:
+            cov_idx = None
+        scores = variance_explained(
+            self.model, cov_idx=cov_idx, factor_wise=False, cov_wise=False, cache=False
+        )[0]
         str_result = "Variance explained for each view:\n"
         for vn, s in scores.items():
             str_result += f"{vn}: {s:.3f}, "
@@ -234,7 +302,44 @@ class LogCallback:
         return False
 
 
-def compute_binary_scores_at(true_mask, learned_w, threshold=0.05, at=None):
+def compute_binary_scores_at(
+    true_mask: np.ndarray,
+    learned_w: np.ndarray,
+    threshold: float = 0.05,
+    at: int = None,
+):
+    """Compute binary scores (precision, recall, F1).
+
+    Parameters
+    ----------
+    true_mask : np.ndarray
+        True underlying mask or the prior mask
+    learned_w : np.ndarray
+        Factor loadings
+    threshold : float, optional
+        Threshold to determine active and inactive loadings,
+        by default 0.05
+    at : int, optional
+        Number of the factor loadings to consider,
+        sorted by abs value,
+        by default None (all)
+
+    Returns
+    -------
+    precision : float (if average is not None) or array of float, shape =\
+        [n_unique_labels]
+
+    recall : float (if average is not None) or array of float, shape =\
+        [n_unique_labels]
+
+    fbeta_score : float (if average is not None) or array of float, shape =\
+        [n_unique_labels]
+
+    support : None (if average is not None) or array of int, shape =\
+        [n_unique_labels]
+        The number of occurrences of each label in ``y_true``.
+
+    """
     if at is None:
         at = true_mask.shape[1]
 

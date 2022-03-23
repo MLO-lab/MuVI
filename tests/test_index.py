@@ -1,6 +1,4 @@
 import numpy as np
-import pytest
-from pandas.api.types import is_string_dtype
 
 from muvi import MuVI
 

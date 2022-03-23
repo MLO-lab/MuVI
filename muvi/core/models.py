@@ -17,20 +17,22 @@ from .index import _normalize_index
 
 logger = logging.getLogger(__name__)
 
-SINGLE_VIEW_TYPE = Union[np.ndarray, pd.DataFrame]
-MULTI_VIEW_TYPE = Union[Dict[str, SINGLE_VIEW_TYPE], List[SINGLE_VIEW_TYPE]]
+Index = Union[int, str, List[int], List[str], np.ndarray, pd.Index]
+SingleView = Union[np.ndarray, pd.DataFrame]
+MultiView = Union[Dict[str, SingleView], List[SingleView]]
 
 
 class MuVI(PyroModule):
     def __init__(
         self,
-        observations: MULTI_VIEW_TYPE,
-        prior_masks: MULTI_VIEW_TYPE = None,
-        covariates: SINGLE_VIEW_TYPE = None,
-        prior_confidence: float = None,
+        observations: MultiView,
+        prior_masks: MultiView = None,
+        covariates: SingleView = None,
+        prior_confidence: float = 0.99,
         n_factors: int = None,
         view_names: List[str] = None,
         likelihoods: List[str] = None,
+        seed: str = None,
         use_gpu: bool = True,
         **kwargs,
     ):
@@ -38,35 +40,43 @@ class MuVI(PyroModule):
 
         Parameters
         ----------
-        n_factors : int
-            Number of latent factors
-        observations : List[Union[np.ndarray, pd.DataFrame]]
-            List of M N x D matrices of observations
-        view_names : List[str]
-            List of names for each view
-        covariates : Union[np.ndarray, pd.DataFrame]
-            N x P matrix of covariates
+        observations : MultiView
+            Collection of observations as list or dict.
+        prior_masks : MultiView, optional
+            Prior feature sets as a collection of binary masks,
+            by default None
+        covariates : SingleView, optional
+            Additional observed covariates, by default None
+        prior_confidence : float, optional
+            Confidence of prior belief from 0 to 1 (exclusive),
+            typical values are between 0.95 and 0.999,
+            by default 0.99
+        n_factors : int, optional
+            Number of latent factors,
+            can be omitted when providing prior masks,
+            by default None
+        view_names : List[str], optional
+            List of names for each view,
+            determines view order as well,
+            by default None
         likelihoods : List[str], optional
             List of likelihoods for each view,
-            either 'normal' or 'bernoulli', by default None
+            either "normal" or "bernoulli",
+            by default None (all "normal")
+        seed : str, optional
+            Training seed, by default None
         use_gpu : bool, optional
-            Whether to use a GPU, by default True
-
-        Raises
-        ------
-        ValueError
-            Missing or negative number of factors
-        ValueError
-            Missing observations
+            Whether to train on a GPU, by default True
         """
         super().__init__(name="MuVI")
-
         self.observations = self._setup_observations(observations, view_names)
         self.prior_masks, self.prior_scales = self._setup_prior_masks(
             prior_masks, prior_confidence, n_factors
         )
         self.covariates = self._setup_covariates(covariates)
         self.likelihoods = self._setup_likelihoods(likelihoods)
+
+        self.seed = seed
 
         self.device = torch.device("cpu")
         if use_gpu and torch.cuda.is_available():
@@ -81,7 +91,7 @@ class MuVI(PyroModule):
         self._informed = self.prior_masks is not None
         self._built = False
         self._trained = False
-        self._cache = {}
+        self._cache = None
 
     def _validate_index(self, idx):
         if not is_string_dtype(idx):
@@ -183,7 +193,6 @@ class MuVI(PyroModule):
         }
 
     def _setup_prior_masks(self, masks, confidence, n_factors):
-
         informed = masks is not None
         valid_n_factors = n_factors is not None and n_factors > 0
         if not informed and not valid_n_factors:
@@ -213,27 +222,39 @@ class MuVI(PyroModule):
 
         # if list convert to dict
         if isinstance(masks, list):
-            masks = {vn: view_mask for vn, view_mask in zip(self.view_names, masks)}
-        informed_views = list(masks.keys())
+            masks = {self.view_names[m]: mask for m, mask in enumerate(masks)}
 
-        n_prior_factors = len(masks[informed_views[0]])
+        informed_views = [vn for vn in self.view_names if vn in masks]
+
+        n_prior_factors = masks[informed_views[0]].shape[0]
         if n_factors is None:
             n_factors = n_prior_factors
 
-        if n_prior_factors > n_factors:
+        if n_prior_factors != n_factors:
+            # TODO: implement dense
             logger.warning(
-                "Prior mask informs more factors than the pre-defined `n_factors`. "
-                "Updating `n_factors` to %s.",
+                "Prior mask informs %s factors instead of %s as pre-defined, "
+                "updating `n_factors` to %s.",
+                n_prior_factors,
+                n_factors,
                 n_prior_factors,
             )
             n_factors = n_prior_factors
 
-        if n_prior_factors < n_factors:
-            logger.warning(
-                "Prior mask informs fewer factors than the pre-defined `n_factors`. "
-                "Informing only the first %s factors.",
-                n_prior_factors,
-            )
+        # if n_prior_factors > n_factors:
+        #     logger.warning(
+        #         "Prior mask informs more factors than the pre-defined `n_factors`. "
+        #         "Updating `n_factors` to %s.",
+        #         n_prior_factors,
+        #     )
+        #     n_factors = n_prior_factors
+
+        # if n_prior_factors < n_factors:
+        #     logger.warning(
+        #         "Prior mask informs fewer factors than the pre-defined `n_factors`. "
+        #         "Informing only the first %s factors.",
+        #         n_prior_factors,
+        #     )
 
         factor_names = None
         for vn in self.view_names:
@@ -456,11 +477,32 @@ class MuVI(PyroModule):
 
     def get_observations(
         self,
-        view_idx="all",
-        sample_idx="all",
-        feature_idx="all",
+        view_idx: Index = "all",
+        sample_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
     ):
+        """Get observations.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        sample_idx : Index, optional
+            Sample index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+
         return self._get_view_attr(
             self.observations,
             view_idx,
@@ -472,11 +514,32 @@ class MuVI(PyroModule):
 
     def get_prior_masks(
         self,
-        view_idx="all",
-        factor_idx="all",
-        feature_idx="all",
+        view_idx: Index = "all",
+        factor_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
     ):
+        """Get prior masks.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        factor_idx : Index, optional
+            Factor index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+
         return self._get_view_attr(
             self.prior_masks,
             view_idx,
@@ -488,11 +551,32 @@ class MuVI(PyroModule):
 
     def get_factor_loadings(
         self,
-        view_idx="all",
-        factor_idx="all",
-        feature_idx="all",
+        view_idx: Index = "all",
+        factor_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
     ):
+        """Get factor loadings.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        factor_idx : Index, optional
+            Factor index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+
         ws = self._guide.get_w(as_list=True)
         return self._get_view_attr(
             {vn: ws[m] for m, vn in enumerate(self.view_names)},
@@ -505,11 +589,32 @@ class MuVI(PyroModule):
 
     def get_covariate_coefficients(
         self,
-        view_idx="all",
-        cov_idx="all",
-        feature_idx="all",
+        view_idx: Index = "all",
+        cov_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
     ):
+        """Get factor loadings.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        cov_idx : Index, optional
+            Covariate index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+
         betas = self._guide.get_beta(as_list=True)
         return self._get_view_attr(
             {vn: betas[m] for m, vn in enumerate(self.view_names)},
@@ -521,8 +626,25 @@ class MuVI(PyroModule):
         )
 
     def get_factor_scores(
-        self, sample_idx="all", factor_idx="all", as_df: bool = False
+        self, sample_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
     ):
+        """Get factor scores.
+
+        Parameters
+        ----------
+        sample_idx : Index, optional
+            Sample index, by default "all"
+        factor_idx : Index, optional
+            Factor index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        Union[np.ndarray, pd.DataFrame]
+            A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_factors`.
+        """
         return self._get_shared_attr(
             self._guide.get_z(),
             sample_idx,
@@ -531,7 +653,26 @@ class MuVI(PyroModule):
             as_df=as_df,
         )
 
-    def get_covariates(self, sample_idx="all", cov_idx="all", as_df: bool = False):
+    def get_covariates(
+        self, sample_idx: Index = "all", cov_idx: Index = "all", as_df: bool = False
+    ):
+        """Get factor scores.
+
+        Parameters
+        ----------
+        sample_idx : Index, optional
+            Sample index, by default "all"
+        cov_idx : Index, optional
+            Covariate index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        Union[np.ndarray, pd.DataFrame]
+            A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_covariates`.
+        """
         return self._get_shared_attr(
             self.covariates,
             sample_idx,
@@ -740,8 +881,15 @@ class MuVI(PyroModule):
             train_covs,
             train_prior_scales,
         ) = self._setup_training_data()
-        logger.info("Starting training...")
+        if self.seed is not None:
+            logger.info("Setting training seed to %s", self.seed)
+            pyro.set_rng_seed(self.seed)
+        # clean start
+        logger.info("Cleaning parameter store")
+        pyro.enable_validation(True)
+        pyro.clear_param_store()
 
+        logger.info("Starting training...")
         stop_early = False
         history = []
         pbar = range(n_iterations)
@@ -796,7 +944,7 @@ class MuVIModel(PyroModule):
             Number of covariates
         likelihoods : List[str], optional
             List of likelihoods for each view,
-            either 'normal' or 'bernoulli', by default None
+            either "normal" or "bernoulli", by default None
         global_prior_scale : float, optional
             Determine the level of global sparsity, by default 1.0
         """
@@ -917,7 +1065,7 @@ class MuVIModel(PyroModule):
                     dist.Normal(
                         torch.zeros(1, device=self.device),
                         (self.global_prior_scale * c * lmbda)
-                        / torch.sqrt(c**2 + lmbda**2),
+                        / torch.sqrt(c ** 2 + lmbda ** 2),
                     ),
                 )
 

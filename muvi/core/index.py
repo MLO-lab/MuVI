@@ -5,6 +5,7 @@ def _normalize_index(indexer, index, as_idx=True):
     # work with ints, convert at the end
     # if single str, get idx and put to list
     # TODO: can be an issue if any of the indices is named 'all'..
+    # TODO: does not seem to work with pd.Index of object type
     if isinstance(indexer, str):
         if indexer == "all":
             indexer = range(len(index))
@@ -21,9 +22,8 @@ def _normalize_index(indexer, index, as_idx=True):
     # if str, get indices where names match
     if issubclass(indexer.dtype.type, (np.str_)):
         indexer = index.get_indexer(indexer)
-    if as_idx:
-        if issubclass(indexer.dtype.type, (np.integer)):
+    if issubclass(indexer.dtype.type, (np.integer)):
+        if as_idx:
             return indexer
-        else:
-            raise IndexError(f"Invalid index `{indexer}`")
-    return index[indexer]
+        return index[indexer]
+    raise IndexError(f"Invalid index `{indexer}`")

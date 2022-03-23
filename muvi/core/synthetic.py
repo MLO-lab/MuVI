@@ -183,7 +183,7 @@ class DataGenerator:
             )
             self.n_fully_shared_factors = 1
             self.n_private_factors = self.n_views
-            self.n_partially_shared_factors = 2**n_comb - 2 - self.n_private_factors
+            self.n_partially_shared_factors = 2 ** n_comb - 2 - self.n_private_factors
 
             return np.array(
                 [list(i) for i in itertools.product([1, 0], repeat=n_comb)]

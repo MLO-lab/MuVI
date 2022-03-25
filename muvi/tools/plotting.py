@@ -47,6 +47,14 @@ def _get_model_cache(model):
     return cache
 
 
+def _lines(ax, positions, ymin, ymax, horizontal=False, **kwargs):
+    if horizontal:
+        ax.hlines(positions, ymin, ymax, **kwargs)
+    else:
+        ax.vlines(positions, ymin, ymax, **kwargs)
+    return ax
+
+
 def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
     """Plot heatmap with horizontal or vertical lines."""
     if figsize is None:
@@ -54,9 +62,23 @@ def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
     fig, g = plt.subplots(figsize=figsize)
     g = sns.heatmap(data, ax=g, **kwargs)
     if hlines is not None:
-        g.hlines(hlines, *g.get_xlim(), linestyles="dashed")
+        _lines(
+            g,
+            hlines,
+            *sorted(g.get_xlim()),
+            horizontal=True,
+            lw=1.0,
+            linestyles="dashed",
+        )
     if vlines is not None:
-        g.vlines(vlines, *g.get_ylim(), linestyles="dashed")
+        _lines(
+            g,
+            vlines,
+            *sorted(g.get_ylim()),
+            horizontal=False,
+            lw=1.0,
+            linestyles="dashed",
+        )
     return g
 
 
@@ -476,17 +498,17 @@ def group(model, factor_idx, groupby, pl_type=HEATMAP, **kwargs):
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
 
     try:
-        type_to_fn[pl_type](
-            _get_model_cache(model).factor_adata, factor_idx, groupby, **kwargs
-        )
+        pl_fn = type_to_fn[pl_type]
     except KeyError as e:
         raise ValueError(
             f"`{pl_type}` is not valid. Select one of {','.join(PL_TYPES)}."
         ) from e
 
+    return pl_fn(_get_model_cache(model).factor_adata, factor_idx, groupby, **kwargs)
+
 
 # plot ranked factors against groups of observations
-def rank(model, n_factors=10, pl_type=None, **kwargs):
+def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
 
     factor_adata = _get_model_cache(model).factor_adata
     if "rank_genes_groups" not in factor_adata.uns:
@@ -521,12 +543,73 @@ def rank(model, n_factors=10, pl_type=None, **kwargs):
         STACKED_VIOLIN: sc.pl.rank_genes_groups_stacked_violin,
     }
 
+    n_groups = len(
+        factor_adata.obs[
+            factor_adata.uns["rank_genes_groups"]["params"]["groupby"]
+        ].unique()
+    )
+
+    positions = np.linspace(
+        n_factors, n_factors * n_groups, num=n_groups - 1, endpoint=False
+    )
+
     try:
-        type_to_fn[pl_type](factor_adata, n_genes=n_factors, **kwargs)
+        pl_fn = type_to_fn[pl_type]
     except KeyError as e:
         raise ValueError(
             f"`{pl_type}` is not valid. Select one of {','.join(PL_TYPES)}."
         ) from e
+
+    if not sep_groups:
+        return pl_fn(
+            factor_adata,
+            n_genes=n_factors,
+            **kwargs,
+        )
+
+    show = kwargs.pop("show", None)
+    save = kwargs.pop("save", None)
+    _pl = pl_fn(
+        factor_adata,
+        n_genes=n_factors,
+        show=False,
+        save=None,
+        **kwargs,
+    )
+
+    # add line separation
+    g = None
+    if pl_type == HEATMAP:
+        g = _pl["heatmap_ax"]
+        ymin = -0.5
+        ymax = factor_adata.n_obs
+        positions -= 0.5
+    if pl_type == MATRIXPLOT:
+        g = _pl["mainplot_ax"]
+        ymin = 0.0
+        ymax = n_groups
+    if pl_type == DOTPLOT or pl_type == STACKED_VIOLIN:
+        g = _pl["mainplot_ax"]
+        ymin = -0.5
+        ymax = n_groups + 0.5
+
+    if g is not None:
+        g = _lines(
+            g,
+            positions,
+            ymin=ymin,
+            ymax=ymax,
+            horizontal=kwargs.pop("swap_axes", False),
+            lw=0.5,
+            color="black",
+            linestyles="dashed",
+            zorder=10,
+            clip_on=False,
+        )
+    writekey = "rank"
+    if len(pl_type) > 0:
+        writekey += f"_{pl_type}"
+    return sc.pl._utils.savefig_or_show(writekey, show=show, save=save)
 
 
 def clustermap(model, factor_idx="all", **kwargs):

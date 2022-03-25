@@ -92,8 +92,16 @@ class Cache:
             self.factor_adata.to_df().loc[:, factor_idx].copy()
         )
         self.use_rep = Cache.FILTERED_KEY
-        if "neighbors" in self.factor_adata.uns:
+        uns_keys = list(self.factor_adata.uns.keys())
+
+        # remove neighborhood information
+        if "neighbors" in uns_keys:
             logger.warning("Removing old neighborhood graph.")
             self.factor_adata.uns.pop("neighbors", None)
             self.factor_adata.obsp.pop("distances", None)
             self.factor_adata.obsp.pop("connectivities", None)
+
+        # remove dendrogram information
+        for key in uns_keys:
+            if "dendrogram" in key:
+                self.factor_adata.uns.pop(key, None)

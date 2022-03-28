@@ -962,33 +962,33 @@ class MuVIModel(PyroModule):
         )
 
         self.device = device
-        self._plates = None
 
-    @property
-    def plates(self):
+    def get_plate(self, name):
         """Get the sampling plates.
 
         Returns
         -------
         dict
         """
-        if self._plates is None:
-            plates = {
-                "view": pyro.plate("view", self.n_views, dim=-1),
-                "factor": pyro.plate("factor", self.n_factors, dim=-2),
-                "feature": pyro.plate("feature", sum(self.n_features), dim=-1),
-                "sample": pyro.plate(
-                    "sample",
-                    self.n_samples,
-                    subsample_size=self.n_subsamples,
-                    dim=-2,
-                ),
-            }
-            if self.n_covariates > 0:
-                plates["covariate"] = pyro.plate("covariate", self.n_covariates, dim=-2)
-            self._plates = plates
+        plate_kwargs = {
+            "view": {"name": "view", "size": self.n_views, "dim": -1},
+            "factor": {"name": "factor", "size": self.n_factors, "dim": -2},
+            "feature": {"name": "feature", "size": sum(self.n_features), "dim": -1},
+            "sample": {
+                "name": "sample",
+                "size": self.n_samples,
+                "subsample_size": self.n_subsamples,
+                "dim": -2,
+            },
+            "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
+        }
+        return pyro.plate(device=self.device, **plate_kwargs[name])
 
-        return self._plates
+    def _zeros(self, size):
+        return torch.zeros(size, device=self.device)
+
+    def _ones(self, size):
+        return torch.ones(size, device=self.device)
 
     def forward(
         self,
@@ -1018,30 +1018,31 @@ class MuVIModel(PyroModule):
         """
 
         output_dict = {}
-        plates = self.plates
 
-        with plates["view"]:
+        view_plate = self.get_plate("view")
+        factor_plate = self.get_plate("factor")
+        feature_plate = self.get_plate("feature")
+        sample_plate = self.get_plate("sample")
+
+        with view_plate:
             output_dict["view_scale"] = pyro.sample(
-                "view_scale", dist.HalfCauchy(torch.ones(1, device=self.device))
+                "view_scale", dist.HalfCauchy(self._ones(1))
             )
-            with plates["factor"]:
+            with factor_plate:
                 output_dict["factor_scale"] = pyro.sample(
                     "factor_scale",
-                    dist.HalfCauchy(torch.ones(1, device=self.device)),
+                    dist.HalfCauchy(self._ones(1)),
                 )
 
-        with plates["feature"]:
-            with plates["factor"]:
+        with feature_plate:
+            with factor_plate:
                 output_dict["local_scale"] = pyro.sample(
                     "local_scale",
-                    dist.HalfCauchy(torch.ones(1, device=self.device)),
+                    dist.HalfCauchy(self._ones(1)),
                 )
                 output_dict["caux"] = pyro.sample(
                     "caux",
-                    dist.InverseGamma(
-                        0.5 * torch.ones(1, device=self.device),
-                        0.5 * torch.ones(1, device=self.device),
-                    ),
+                    dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
                 )
                 slab_scale = 1.0 if prior_scales is None else prior_scales
                 c = slab_scale * torch.sqrt(output_dict["caux"])
@@ -1063,44 +1064,36 @@ class MuVIModel(PyroModule):
                 output_dict["w"] = pyro.sample(
                     "w",
                     dist.Normal(
-                        torch.zeros(1, device=self.device),
+                        self._zeros(1),
                         (self.global_prior_scale * c * lmbda)
                         / torch.sqrt(c ** 2 + lmbda ** 2),
                     ),
                 )
 
             if self.n_covariates > 0:
-                with plates["covariate"]:
+                with self.get_plate("covariate"):
                     output_dict["beta"] = pyro.sample(
                         "beta",
-                        dist.Normal(
-                            torch.zeros(1, device=self.device),
-                            torch.ones(1, device=self.device),
-                        ),
+                        dist.Normal(self._zeros(1), self._ones(1)),
                     )
 
             output_dict["sigma"] = pyro.sample(
                 "sigma",
-                dist.InverseGamma(
-                    torch.ones(1, device=self.device),
-                    torch.ones(1, device=self.device),
-                ),
+                dist.InverseGamma(self._ones(1), self._ones(1)),
             )
 
-        with plates["sample"] as indices:
+        with sample_plate as indices:
             output_dict["z"] = pyro.sample(
                 "z",
-                dist.Normal(
-                    torch.zeros(self.n_factors, device=self.device),
-                    torch.ones(self.n_factors, device=self.device),
-                ),
+                dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
             )
 
             if self.n_subsamples < self.n_samples:
-                indices = indices.to(self.device)
+                # indices = indices.to(self.device)
                 obs = obs.index_select(0, indices)
                 mask = mask.index_select(0, indices)
-                covs = covs.index_select(0, indices)
+                if covs is not None:
+                    covs = covs.index_select(0, indices)
 
             # TODO! extend to multiple different likelihoods
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
@@ -1285,25 +1278,34 @@ class MuVIGuide(PyroModule):
         """Approximate posterior."""
         output_dict = {}
 
-        plates = self.model.plates
+        view_plate = self.model.get_plate("view")
+        factor_plate = self.model.get_plate("factor")
+        feature_plate = self.model.get_plate("feature")
+        sample_plate = self.model.get_plate("sample")
 
-        with plates["view"]:
+        with view_plate:
             output_dict["view_scale"] = self._sample_log_normal("view_scale")
-            with plates["factor"]:
+            with factor_plate:
                 output_dict["factor_scale"] = self._sample_log_normal("factor_scale")
 
-        with plates["feature"]:
-            with plates["factor"]:
+        with feature_plate:
+            with factor_plate:
                 output_dict["local_scale"] = self._sample_log_normal("local_scale")
                 output_dict["caux"] = self._sample_log_normal("caux")
                 output_dict["w"] = self._sample_normal("w")
 
             if self.model.n_covariates > 0:
-                with plates["covariate"]:
+                with self.model.get_plate("covariate"):
                     output_dict["beta"] = self._sample_normal("beta")
 
             output_dict["sigma"] = self._sample_log_normal("sigma")
 
-        with plates["sample"]:
-            output_dict["z"] = self._sample_normal("z")
+        with sample_plate as indices:
+            z_loc, z_scale = self._get_loc_and_scale("z")
+            if indices is not None:
+                # indices = indices.to(self.device)
+                z_loc = z_loc.index_select(0, indices)
+                z_scale = z_scale.index_select(0, indices)
+            output_dict["z"] = pyro.sample("z", dist.Normal(z_loc, z_scale))
+            # output_dict["z"] = self._sample_normal("z")
         return output_dict

@@ -44,9 +44,7 @@ class MuVI(PyroModule):
         n_factors: int = None,
         view_names: List[str] = None,
         likelihoods: List[str] = None,
-        seed: str = None,
         use_gpu: bool = True,
-        **kwargs,
     ):
         """MuVI module.
 
@@ -75,8 +73,6 @@ class MuVI(PyroModule):
             List of likelihoods for each view,
             either "normal" or "bernoulli",
             by default None (all "normal")
-        seed : str, optional
-            Training seed, by default None
         use_gpu : bool, optional
             Whether to train on a GPU, by default True
         """
@@ -88,15 +84,11 @@ class MuVI(PyroModule):
         self.covariates = self._setup_covariates(covariates)
         self.likelihoods = self._setup_likelihoods(likelihoods)
 
-        self.seed = seed
-
         self.device = torch.device("cpu")
         if use_gpu and torch.cuda.is_available():
             logger.info("GPU available, running all computations on the GPU.")
             self.device = torch.device("cuda")
         self.to(self.device)
-
-        self.kwargs = kwargs
 
         self._model = None
         self._guide = None
@@ -720,9 +712,8 @@ class MuVI(PyroModule):
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 device=self.device,
-                **self.kwargs,
             )
-            self._guide = MuVIGuide(self._model, device=self.device, **self.kwargs)
+            self._guide = MuVIGuide(self._model, device=self.device)
             self._built = True
         return self._built
 
@@ -833,11 +824,12 @@ class MuVI(PyroModule):
         self,
         batch_size: int = 0,
         n_epochs: int = 1000,
-        n_particles: int = 20,
+        n_particles: int = None,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
-        verbose: bool = True,
         callbacks: List[Callable] = None,
+        verbose: bool = True,
+        seed: str = None,
     ):
         """Perform inference.
 
@@ -850,15 +842,17 @@ class MuVI(PyroModule):
             by default 1000
         n_particles : int, optional
             Number of particles/samples used to form the ELBO (gradient) estimators,
-            by default 20
+            by default 1000 // batch_size
         learning_rate : float, optional
             Learning rate, by default 0.005
         optimizer : str, optional
             Optimizer as string, 'adam' or 'clipped', by default "clipped"
-        verbose : bool, optional
-            Whether to log progress, by default 1
         callbacks : List[Callable], optional
             List of callbacks during training, by default None
+        verbose : bool, optional
+            Whether to log progress, by default 1
+        seed : str, optional
+            Training seed, by default None
 
         Returns
         -------
@@ -870,6 +864,9 @@ class MuVI(PyroModule):
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
 
+        if n_particles is None:
+            n_particles = max(1, 1000 // batch_size)
+        logger.info("Using %s particles on parallel", n_particles)
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
@@ -898,7 +895,7 @@ class MuVI(PyroModule):
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=1,
-                pin_memory=True,
+                pin_memory=str(self.device) != "cpu",
                 drop_last=False,
             )
 
@@ -925,9 +922,10 @@ class MuVI(PyroModule):
                     None, train_obs, mask_obs, train_covs, train_prior_scales
                 )
 
-        if self.seed is not None:
-            logger.info("Setting training seed to %s", self.seed)
-            pyro.set_rng_seed(self.seed)
+        self.seed = seed
+        if seed is not None:
+            logger.info("Setting training seed to %s", seed)
+            pyro.set_rng_seed(seed)
         # clean start
         logger.info("Cleaning parameter store")
         pyro.enable_validation(True)

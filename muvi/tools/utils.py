@@ -484,9 +484,11 @@ def umap(model, **kwargs):
     return sc.tl.umap(setup_cache(model).factor_adata, **kwargs)
 
 
-def rank(model, groupby, **kwargs):
+def rank(model, groupby, method="t-test_overestim_var", **kwargs):
     """Rank factors for characterizing groups."""
-    return sc.tl.rank_genes_groups(setup_cache(model).factor_adata, groupby, **kwargs)
+    return sc.tl.rank_genes_groups(
+        setup_cache(model).factor_adata, groupby, method=method, **kwargs
+    )
 
 
 def dendrogram(model, groupby, **kwargs):

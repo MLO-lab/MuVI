@@ -1,5 +1,6 @@
 """Collection of plotting functions."""
 import logging
+from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,19 +26,15 @@ VIOLIN = "violin"
 STACKED_VIOLIN = "stacked_violin"
 PL_TYPES = [HEATMAP, MATRIXPLOT, DOTPLOT, TRACKSPLOT, VIOLIN, STACKED_VIOLIN]
 
-# def save_figure(file_path, fmt="png", close_fig=False):
-#     """Save the last figure that was plotted."""
-#     # for fmt in ["pdf", "pgf", "png"]:
-#     plt.savefig(
-#         file_path + "." + fmt,
-#         dpi=300,
-#         format=fmt,
-#         # transparent=True,
-#         facecolor=(1, 1, 1, 0),
-#         bbox_inches="tight",
-#     )
-#     if close_fig:
-#         plt.close()
+
+def savefig_or_show(
+    writekey: str,
+    show: bool = None,
+    dpi: int = None,
+    ext: str = None,
+    save: Union[bool, str, None] = None,
+):
+    return sc.pl._utils.savefig_or_show(writekey, show, dpi, ext, save)
 
 
 def _get_model_cache(model):
@@ -85,6 +82,8 @@ def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
 def variance_explained(
     model,
     sort=50,
+    show: bool = None,
+    save: Union[bool, str, None] = None,
     **kwargs,
 ):
     """Heatmap of variance explained, see `muvi.tl.variance_explained`."""
@@ -127,8 +126,9 @@ def variance_explained(
         vlines = None
 
     g = lined_heatmap(r2_joint, figsize=figsize, vlines=vlines, **kwargs)
-
-    return g
+    if not show:
+        return g
+    return savefig_or_show("variance_explained", show=show, save=save)
 
 
 def factors_overview(
@@ -139,6 +139,8 @@ def factors_overview(
     sig_only=False,
     adjusted=False,
     sort=25,
+    show: bool = None,
+    save: Union[bool, str, None] = None,
     **kwargs,
 ):
     """Scatterplot of variance explained along with significance test resutls,
@@ -205,10 +207,21 @@ def factors_overview(
         rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"
     )
     g.set(xlabel=r"$R^2$")
-    return g
+    if not show:
+        return g
+    return savefig_or_show(f"overview_view_{view_idx}", show=show, save=save)
 
 
-def inspect_factor(model, view_idx, factor_idx, sort=25, threshold=0.05, **kwargs):
+def inspect_factor(
+    model,
+    view_idx,
+    factor_idx,
+    sort=25,
+    threshold=0.05,
+    show: bool = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
     """Scatterplot of factor loadings for specific factors."""
     view_idx = _normalize_index(view_idx, model.view_names, as_idx=False)
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
@@ -269,7 +282,9 @@ def inspect_factor(model, view_idx, factor_idx, sort=25, threshold=0.05, **kwarg
         **kwargs,
     )
     g.set_title(f"Overview factor {factor_idx} in {view_idx}")
-    return g
+    if not show:
+        return g
+    return savefig_or_show(f"overview_factor_{factor_idx}", show=show, save=save)
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
@@ -462,15 +477,17 @@ def _embed(model, color, pl_fn, **kwargs):
 
 
 def tsne(model, color, **kwargs):
-    if "tsne" not in _get_model_cache(model).factor_adata.obsm.keys():
-        logger.warning("Computing tSNE embeddings first.")
+    tsne_key = model._cache.use_rep + "_" + "tsne"
+    if tsne_key not in _get_model_cache(model).factor_adata.obsm:
+        print("Computing tSNE embeddings first.")
         muvi.tl.tsne(model)
     return _embed(model, color, pl_fn=sc.pl.tsne, **kwargs)
 
 
 def umap(model, color, **kwargs):
-    if "umap" not in _get_model_cache(model).factor_adata.obsm.keys():
-        logger.warning("Computing UMAP embeddings first.")
+    umap_key = model._cache.use_rep + "_" + "umap"
+    if umap_key not in _get_model_cache(model).factor_adata.obsm:
+        print("Computing UMAP embeddings first.")
         muvi.tl.umap(model)
     return _embed(model, color, pl_fn=sc.pl.umap, **kwargs)
 
@@ -609,7 +626,7 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
     writekey = "rank"
     if len(pl_type) > 0:
         writekey += f"_{pl_type}"
-    return sc.pl._utils.savefig_or_show(writekey, show=show, save=save)
+    return savefig_or_show(writekey, show=show, save=save)
 
 
 def clustermap(model, factor_idx="all", **kwargs):

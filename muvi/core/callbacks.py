@@ -11,23 +11,23 @@ from muvi.tools.utils import rmse, variance_explained
 class EarlyStoppingCallback:
     def __init__(
         self,
-        n_iterations: int,
-        min_iterations: int = 1000,
+        n_epochs: int,
+        min_epochs: int = 100,
         window_size: int = 10,
-        tolerance: float = 1e-3,
+        tolerance: float = 1e-4,
         patience: int = 1,
     ):
         """Early stopping callback.
 
         Parameters
         ----------
-        n_iterations : int
-            Number of training iterations
-        min_iterations : int, optional
-            Minimal number of iterations before deploying early stopping,
+        n_epochs : int
+            Number of training epochs
+        min_epochs : int, optional
+            Minimal number of epochs before deploying early stopping,
             by default 1000
         window_size : int, optional
-            Number of iterations before aggregating scores,
+            Number of epochs before aggregating scores,
             by default 10
         tolerance : float, optional
             Improvement ratio between two consecutive evaluations,
@@ -36,8 +36,8 @@ class EarlyStoppingCallback:
             Number of patience steps before terminating training,
             by default 1
         """
-        self.n_iterations = n_iterations
-        self.min_iterations = min_iterations
+        self.n_epochs = n_epochs
+        self.min_epochs = min_epochs
         self.tolerance = tolerance
         self.patience = patience
 
@@ -48,12 +48,9 @@ class EarlyStoppingCallback:
     def __call__(self, loss_history):
         stop_early = False
 
-        iteration_idx = len(loss_history) - 1
+        epoch_idx = len(loss_history) - 1
 
-        if (
-            iteration_idx % self.window_size == 0
-            and iteration_idx > self.min_iterations
-        ):
+        if epoch_idx % self.window_size == 0 and epoch_idx > self.min_epochs:
             current_window_avg_loss = np.mean(loss_history[-self.window_size :])
 
             relative_improvement = (
@@ -83,7 +80,7 @@ class CheckpointCallback:
     def __init__(
         self,
         model,
-        n_iterations: int,
+        n_epochs: int,
         n_checkpoints: int = 10,
         callback: Callable = None,
     ):
@@ -93,8 +90,8 @@ class CheckpointCallback:
         ----------
         model : MuVI
             A MuVI object
-        n_iterations : int
-            Number of training iterations
+        n_epochs : int
+            Number of training epochs
         n_checkpoints : int, optional
             Number of times to execute during training,
             by default 10
@@ -103,15 +100,15 @@ class CheckpointCallback:
             by default None
         """
         self.model = model
-        self.n_iterations = n_iterations
+        self.n_epochs = n_epochs
         self.n_checkpoints = n_checkpoints
-        self.window_size = int(n_iterations / n_checkpoints)
+        self.window_size = int(n_epochs / n_checkpoints)
         self.callback = callback
 
     def __call__(self, loss_history):
-        iteration_idx = len(loss_history)
+        epoch_idx = len(loss_history)
 
-        if iteration_idx % self.window_size == 0 or iteration_idx == self.n_iterations:
+        if epoch_idx % self.window_size == 0 or epoch_idx == self.n_epochs:
             self.callback()
 
         return False
@@ -129,7 +126,7 @@ class LogCallback:
     def __init__(
         self,
         model,
-        n_iterations: int,
+        n_epochs: int,
         n_checkpoints: int = 10,
         active_callbacks: List[str] = None,
         view_wise: bool = True,
@@ -141,8 +138,8 @@ class LogCallback:
         ----------
         model : MuVI
             A MuVI object
-        n_iterations : int
-            Number of training iterations
+        n_epochs : int
+            Number of training epochs
         n_checkpoints : int, optional
             Number of times to execute during training,
             by default 10
@@ -155,7 +152,7 @@ class LogCallback:
         """
         self.kwargs = kwargs
         self.model = model
-        self.n_iterations = n_iterations
+        self.n_epochs = n_epochs
         self.n_checkpoints = n_checkpoints
         self.view_wise = view_wise
 
@@ -164,7 +161,7 @@ class LogCallback:
         self.callback_config = {k: self._default_config[k] for k in active_callbacks}
         self.callback_dict = {
             k: CheckpointCallback(
-                self.model, self.n_iterations, v["n_checkpoints"], v["callback"]
+                self.model, self.n_epochs, v["n_checkpoints"], v["callback"]
             )
             for k, v in self.callback_config.items()
         }

@@ -11,6 +11,7 @@ from pyro.distributions import constraints
 from pyro.infer.autoguide.guides import deep_getattr, deep_setattr
 from pyro.nn import PyroModule, PyroParam
 from pyro.optim import Adam, ClippedAdam
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from .index import _normalize_index
@@ -20,6 +21,17 @@ logger = logging.getLogger(__name__)
 Index = Union[int, str, List[int], List[str], np.ndarray, pd.Index]
 SingleView = Union[np.ndarray, pd.DataFrame]
 MultiView = Union[Dict[str, SingleView], List[SingleView]]
+
+
+class TensorDataset(Dataset):
+    def __init__(self, *tensors):
+        self.tensors = tensors
+
+    def __len__(self):
+        return self.tensors[0].size(0)
+
+    def __getitem__(self, index):
+        return index, tuple(tensor[index] for tensor in self.tensors)
 
 
 class MuVI(PyroModule):
@@ -714,18 +726,21 @@ class MuVI(PyroModule):
             self._built = True
         return self._built
 
-    def _setup_optimizer(self, optimizer: str, learning_rate: float, n_iterations: int):
+    def _setup_optimizer(
+        self, batch_size: int, n_epochs: int, learning_rate: float, optimizer: str
+    ):
         """Setup SVI optimizer.
 
         Parameters
         ----------
-        optimizer : str
-            Optimizer as string, 'adam' or 'clipped'
+        batch_size : int
+            Batch size
+        n_epochs : int
+            Number of epochs, needed to schedule learning rate decay
         learning_rate : float
             Learning rate
-        n_iterations : int
-            Number of SVI iterations,
-            needed to schedule learning rate decay
+        optimizer : str
+            Optimizer as string, 'adam' or 'clipped'
 
         Returns
         -------
@@ -735,6 +750,8 @@ class MuVI(PyroModule):
 
         optim = Adam({"lr": learning_rate, "betas": (0.95, 0.999)})
         if optimizer.lower() == "clipped":
+            n_iterations = int(n_epochs * (self.n_samples // batch_size))
+            logger.info("Decaying learning rate over %s iterations.", n_iterations)
             gamma = 0.1
             lrd = gamma ** (1 / n_iterations)
             optim = ClippedAdam({"lr": learning_rate, "lrd": lrd})
@@ -744,7 +761,6 @@ class MuVI(PyroModule):
 
     def _setup_svi(
         self,
-        batch_size: int,
         optimizer: pyro.optim.PyroOptim,
         n_particles: int,
         scale: bool = True,
@@ -753,14 +769,12 @@ class MuVI(PyroModule):
 
         Parameters
         ----------
-        batch_size : int
-            Batch size
         optimizer : pyro.optim.PyroOptim
             pyro or torch optimizer
         n_particles : int
             Number of particles/samples used to form the ELBO (gradient) estimators
         scale : bool, optional
-            Whether to scale ELBO by 1/batch_size, by default True
+            Whether to scale ELBO by the number of samples, by default True
 
         Returns
         -------
@@ -769,7 +783,7 @@ class MuVI(PyroModule):
         """
         scaler = 1.0
         if scale:
-            scaler = 1.0 / batch_size
+            scaler = 1.0 / self.n_samples
 
         svi = pyro.infer.SVI(
             model=pyro.poutine.scale(self._model, scale=scaler),
@@ -796,11 +810,7 @@ class MuVI(PyroModule):
             Tuple of (obs, mask, covs, prior_scales)
         """
         train_obs = torch.cat(
-            [
-                torch.Tensor(self.observations[vn]).to(self.device)
-                for vn in self.view_names
-            ],
-            1,
+            [torch.Tensor(self.observations[vn]) for vn in self.view_names], 1
         )
         mask_obs = ~torch.isnan(train_obs)
         # replace all nans with zeros
@@ -809,16 +819,12 @@ class MuVI(PyroModule):
 
         train_covs = None
         if self.covariates is not None:
-            train_covs = torch.Tensor(self.covariates).to(self.device)
+            train_covs = torch.Tensor(self.covariates)
 
         train_prior_scales = None
         if self._informed:
             train_prior_scales = torch.cat(
-                [
-                    torch.Tensor(self.prior_scales[vn]).to(self.device)
-                    for vn in self.view_names
-                ],
-                1,
+                [torch.Tensor(self.prior_scales[vn]) for vn in self.view_names], 1
             )
 
         return train_obs, mask_obs, train_covs, train_prior_scales
@@ -826,7 +832,7 @@ class MuVI(PyroModule):
     def fit(
         self,
         batch_size: int = 0,
-        n_iterations: int = 1000,
+        n_epochs: int = 1000,
         n_particles: int = 20,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
@@ -839,8 +845,9 @@ class MuVI(PyroModule):
         ----------
         batch_size : int, optional
             Batch size, by default 0 (all samples)
-        n_iterations : int, optional
-            Number of iterations, by default 1000
+        n_epochs : int, optional
+            Number of iterations over the whole dataset,
+            by default 1000
         n_particles : int, optional
             Number of particles/samples used to form the ELBO (gradient) estimators,
             by default 20
@@ -863,17 +870,14 @@ class MuVI(PyroModule):
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
 
-        if batch_size < self.n_samples:
-            logger.info("Using batches of size %s.", batch_size)
-        else:
-            logger.info("Using complete dataset.")
-
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
-        optimizer = self._setup_optimizer(optimizer, learning_rate, n_iterations)
+        optimizer = self._setup_optimizer(
+            batch_size, n_epochs, learning_rate, optimizer
+        )
         logger.info("Preparing SVI...")
-        svi = self._setup_svi(batch_size, optimizer, n_particles, scale=True)
+        svi = self._setup_svi(optimizer, n_particles, scale=True)
         logger.info("Preparing training data...")
         (
             train_obs,
@@ -881,6 +885,46 @@ class MuVI(PyroModule):
             train_covs,
             train_prior_scales,
         ) = self._setup_training_data()
+
+        train_prior_scales = train_prior_scales.to(self.device)
+
+        if batch_size < self.n_samples:
+            logger.info("Using batches of size %s.", batch_size)
+            tensors = (train_obs, mask_obs)
+            if self.covariates is not None:
+                tensors += (train_covs,)
+            data_loader = DataLoader(
+                TensorDataset(*tensors),
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=1,
+                pin_memory=True,
+                drop_last=False,
+            )
+
+            def _step():
+                iteration_loss = 0
+                for _, (sample_idx, tensors) in enumerate(data_loader):
+                    iteration_loss += svi.step(
+                        sample_idx.to(self.device),
+                        *[tensor.to(self.device) for tensor in tensors],
+                        prior_scales=train_prior_scales,
+                    )
+                return iteration_loss
+
+        else:
+            logger.info("Using complete dataset.")
+            train_obs = train_obs.to(self.device)
+            mask_obs = mask_obs.to(self.device)
+
+            if train_covs is not None:
+                train_covs = train_covs.to(self.device)
+
+            def _step():
+                return svi.step(
+                    None, train_obs, mask_obs, train_covs, train_prior_scales
+                )
+
         if self.seed is not None:
             logger.info("Setting training seed to %s", self.seed)
             pyro.set_rng_seed(self.seed)
@@ -892,21 +936,16 @@ class MuVI(PyroModule):
         logger.info("Starting training...")
         stop_early = False
         history = []
-        pbar = range(n_iterations)
+        pbar = range(n_epochs)
         if verbose > 0:
             pbar = tqdm(pbar)
-            window_size = 10
-        for iteration_idx in pbar:
-            iteration_loss = svi.step(
-                train_obs, mask_obs, train_covs, train_prior_scales
-            )
-            history.append(iteration_loss)
+            window_size = 5
+        for epoch_idx in pbar:
+            epoch_loss = _step()
+            history.append(epoch_loss)
             if verbose > 0:
-                if (
-                    iteration_idx % window_size == 0
-                    or iteration_idx == n_iterations - 1
-                ):
-                    pbar.set_postfix({"ELBO": iteration_loss})
+                if epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1:
+                    pbar.set_postfix({"ELBO": epoch_loss})
             if callbacks is not None:
                 # TODO: dont really like this, a bit sloppy
                 stop_early = any([callback(history) for callback in callbacks])
@@ -963,26 +1002,27 @@ class MuVIModel(PyroModule):
 
         self.device = device
 
-    def get_plate(self, name):
-        """Get the sampling plates.
+    def get_plate(self, name: str, **kwargs):
+        """Get the sampling plate.
+
+        Parameters
+        ----------
+        name : str
+            Name of the plate
 
         Returns
         -------
-        dict
+        PlateMessenger
+            A pyro plate.
         """
         plate_kwargs = {
             "view": {"name": "view", "size": self.n_views, "dim": -1},
             "factor": {"name": "factor", "size": self.n_factors, "dim": -2},
             "feature": {"name": "feature", "size": sum(self.n_features), "dim": -1},
-            "sample": {
-                "name": "sample",
-                "size": self.n_samples,
-                "subsample_size": self.n_subsamples,
-                "dim": -2,
-            },
+            "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
-        return pyro.plate(device=self.device, **plate_kwargs[name])
+        return pyro.plate(device=self.device, **{**plate_kwargs[name], **kwargs})
 
     def _zeros(self, size):
         return torch.zeros(size, device=self.device)
@@ -992,6 +1032,7 @@ class MuVIModel(PyroModule):
 
     def forward(
         self,
+        sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: torch.Tensor = None,
@@ -1022,7 +1063,7 @@ class MuVIModel(PyroModule):
         view_plate = self.get_plate("view")
         factor_plate = self.get_plate("factor")
         feature_plate = self.get_plate("feature")
-        sample_plate = self.get_plate("sample")
+        sample_plate = self.get_plate("sample", subsample=sample_idx)
 
         with view_plate:
             output_dict["view_scale"] = pyro.sample(
@@ -1082,18 +1123,11 @@ class MuVIModel(PyroModule):
                 dist.InverseGamma(self._ones(1), self._ones(1)),
             )
 
-        with sample_plate as indices:
+        with sample_plate:
             output_dict["z"] = pyro.sample(
                 "z",
                 dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
             )
-
-            if self.n_subsamples < self.n_samples:
-                # indices = indices.to(self.device)
-                obs = obs.index_select(0, indices)
-                mask = mask.index_select(0, indices)
-                if covs is not None:
-                    covs = covs.index_select(0, indices)
 
             # TODO! extend to multiple different likelihoods
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
@@ -1270,6 +1304,7 @@ class MuVIGuide(PyroModule):
 
     def forward(
         self,
+        sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: torch.Tensor = None,
@@ -1281,7 +1316,7 @@ class MuVIGuide(PyroModule):
         view_plate = self.model.get_plate("view")
         factor_plate = self.model.get_plate("factor")
         feature_plate = self.model.get_plate("feature")
-        sample_plate = self.model.get_plate("sample")
+        sample_plate = self.model.get_plate("sample", subsample=sample_idx)
 
         with view_plate:
             output_dict["view_scale"] = self._sample_log_normal("view_scale")

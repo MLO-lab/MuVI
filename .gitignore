@@ -6,8 +6,7 @@
 .history/
 
 # Misc folders
-examples/*_results_*
-examples/dlbcl/
+projects/
 logs/
 datasets/
 scripts*/

@@ -13,6 +13,7 @@ from statsmodels.stats import multitest
 from tqdm import tqdm
 
 from muvi.core.index import _normalize_index
+from muvi.core.models import MuVI
 from muvi.tools.cache import Cache
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,11 @@ def test(
     if view_idx not in model.view_names:
         raise IndexError(f"`{view_idx}` not found in the view names.")
 
+    if use_prior_mask and not model._informed:
+        raise ValueError(
+            "`feature_sets` is None, no feature sets provided for uninformed model."
+        )
+
     model_cache = setup_cache(model)
 
     sign = sign.lower().strip()
@@ -486,6 +492,8 @@ def umap(model, **kwargs):
 
 def rank(model, groupby, method="t-test_overestim_var", **kwargs):
     """Rank factors for characterizing groups."""
+    if "rankby_abs" not in kwargs:
+        kwargs["rankby_abs"] = True
     return sc.tl.rank_genes_groups(
         setup_cache(model).factor_adata, groupby, method=method, **kwargs
     )
@@ -497,6 +505,26 @@ def dendrogram(model, groupby, **kwargs):
     kwargs["use_rep"] = model_cache.use_rep
     kwargs["n_pcs"] = 0
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
+
+
+def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
+
+    view_names = sorted(mdata.mod.keys())
+    observations = {
+        view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
+    }
+    prior_masks = None
+    if prior_mask_key is not None:
+        prior_masks = {
+            view_name: mdata.mod[view_name].varm[prior_mask_key].T.copy()
+            for view_name in view_names
+        }
+
+    covariates = None
+    if covariate_key is not None:
+        covariates = mdata.obsm[covariate_key].copy()
+
+    return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
 
 
 def to_mdata(

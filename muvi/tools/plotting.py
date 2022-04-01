@@ -118,6 +118,11 @@ def variance_explained(
     if r2_cov is not None:
         r2_joint = pd.concat([r2_fac, r2_cov], axis=1)
 
+    if r2_joint.isna().all(None):
+        raise ValueError(
+            "No scores found in model cache, rerun `muvi.tl.variance_explained`."
+        )
+
     r2_joint.index = r2_joint.index.str[len(model_cache.METRIC_R2) + 1 :]
 
     figsize = (max(20, r2_joint.shape[1] // 5), r2_joint.shape[0])
@@ -154,9 +159,11 @@ def factors_overview(
     name_col = "Factor"
     df[name_col] = df.index.astype(str)
 
-    size_col = "Size"
-    df[size_col] = model.get_prior_masks(view_idx, as_df=True)[view_idx].sum(1)
-    df.loc[df[name_col].str.contains("dense", case=False), size_col] = 0
+    size_col = None
+    if model._informed:
+        size_col = "Size"
+        df[size_col] = model.get_prior_masks(view_idx, as_df=True)[view_idx].sum(1)
+        df.loc[df[name_col].str.contains("dense", case=False), size_col] = 0
 
     sign_dict = {model_cache.TEST_ALL: " (*)"}
     if one_sided:
@@ -168,7 +175,11 @@ def factors_overview(
     if adjusted:
         p_col = "p_adj"
 
-    p_df = df[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]].fillna(1.0)
+    p_df = df[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]]
+    if p_df.isna().all(None):
+        raise ValueError("No test results found in model cache, rerun `muvi.tl.test`.")
+
+    p_df = p_df.fillna(1.0)
     df[joint_p_col] = p_df.min(axis=1).clip(1e-10, 1.0)
     df[direction_col] = p_df.idxmin(axis=1).str[len(p_col) + 1 : len(p_col) + 4]
 
@@ -477,17 +488,15 @@ def _embed(model, color, pl_fn, **kwargs):
 
 
 def tsne(model, color, **kwargs):
-    tsne_key = model._cache.use_rep + "_" + "tsne"
-    if tsne_key not in _get_model_cache(model).factor_adata.obsm:
-        print("Computing tSNE embeddings first.")
+    if "X_tsne" not in _get_model_cache(model).factor_adata.obsm:
+        logger.warning("Computing tSNE embeddings first.")
         muvi.tl.tsne(model)
     return _embed(model, color, pl_fn=sc.pl.tsne, **kwargs)
 
 
 def umap(model, color, **kwargs):
-    umap_key = model._cache.use_rep + "_" + "umap"
-    if umap_key not in _get_model_cache(model).factor_adata.obsm:
-        print("Computing UMAP embeddings first.")
+    if "X_umap" not in _get_model_cache(model).factor_adata.obsm:
+        logger.warning("Computing UMAP embeddings first.")
         muvi.tl.umap(model)
     return _embed(model, color, pl_fn=sc.pl.umap, **kwargs)
 

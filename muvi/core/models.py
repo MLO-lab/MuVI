@@ -485,6 +485,7 @@ class MuVI(PyroModule):
         sample_idx: Index = "all",
         feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
+        predicted: bool = False,
     ):
         """Get observations.
 
@@ -499,6 +500,9 @@ class MuVI(PyroModule):
         as_df : bool, optional
             Whether to return a pandas dataframe,
             by default False
+        predicted : bool, optional
+            Whether to return a the predicted observations,
+            i.e. Z @ W, by default False
 
         Returns
         -------
@@ -506,9 +510,14 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
-
+        obs = self.observations
+        if predicted:
+            obs = {
+                vn: self.get_factor_scores() @ loadings
+                for vn, loadings in self.get_factor_loadings().items()
+            }
         return self._get_view_attr(
-            self.observations,
+            obs,
             view_idx,
             feature_idx,
             other_idx=sample_idx,
@@ -883,7 +892,8 @@ class MuVI(PyroModule):
             train_prior_scales,
         ) = self._setup_training_data()
 
-        train_prior_scales = train_prior_scales.to(self.device)
+        if self._informed:
+            train_prior_scales = train_prior_scales.to(self.device)
 
         if batch_size < self.n_samples:
             logger.info("Using batches of size %s.", batch_size)

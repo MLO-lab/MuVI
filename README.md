@@ -6,7 +6,7 @@ We suggest using [conda](https://docs.conda.io/en/latest/miniconda.html) to mana
 
 1. Clone repository:
 ```bash
-git clone git@github.com:MLO-lab/MuVI.git
+git clone https://github.com/MLO-lab/MuVI.git
 ```
 2. Create a python environment in conda:
 ```bash
@@ -18,7 +18,7 @@ source activate muvi
 ```
 4. Install `muvi` with poetry:
 ```bash
-cd muvi
+cd MuVI
 poetry install
 ```
 5. Install extras with poetry (optional):

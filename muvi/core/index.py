@@ -5,7 +5,6 @@ def _normalize_index(indexer, index, as_idx=True):
     # work with ints, convert at the end
     # if single str, get idx and put to list
     # TODO: can be an issue if any of the indices is named 'all'..
-    # TODO: does not seem to work with pd.Index of object type
     if isinstance(indexer, str):
         if indexer == "all":
             indexer = range(len(index))
@@ -16,14 +15,22 @@ def _normalize_index(indexer, index, as_idx=True):
         indexer = [indexer]
     # work with np array
     indexer = np.array(indexer)
+    # if empty
+    if len(indexer) == 0:
+        raise IndexError(f"Empty index, `{indexer}`.")
     # if mask, get indices where True
-    if issubclass(indexer.dtype.type, np.bool_):
+    if isinstance(indexer[0], (bool, np.bool_)):
         indexer = np.where(indexer)[0]
+    # if all False from previous boolean mask
+    if len(indexer) == 0:
+        raise IndexError(f"Empty index, `{indexer}`.")
+    # note empty, get first element
+    # reason: dtype of str was not working for pd.Index
     # if str, get indices where names match
-    if issubclass(indexer.dtype.type, (np.str_)):
+    if isinstance(indexer[0], (str, np.str_)):
         indexer = index.get_indexer(indexer)
-    if issubclass(indexer.dtype.type, (np.integer)):
+    if isinstance(indexer[0], (int, np.integer)):
         if as_idx:
             return indexer
         return index[indexer]
-    raise IndexError(f"Invalid index `{indexer}`")
+    raise IndexError(f"Invalid index, `{indexer}`.")

@@ -1,6 +1,52 @@
 import numpy as np
+import pandas as pd
+import pytest
 
 from muvi import MuVI
+from muvi.core.index import _normalize_index
+
+
+def test_normalize_index_correct():
+    index = pd.Index([str(i) for i in range(10)])
+    single_indices = [0, "0", True]
+    multiple_indices_int = list(range(3))
+    multiple_indices_str = [str(i) for i in multiple_indices_int]
+    multiple_indices_bool = [True for _ in multiple_indices_int] + [False]
+    multiple_indices = [
+        multiple_indices_int,
+        multiple_indices_str,
+        multiple_indices_bool,
+    ]
+
+    assert (_normalize_index("all", index) == np.arange(len(index))).all()
+    assert (_normalize_index("all", index, as_idx=False) == np.array(index)).all()
+
+    for si in single_indices:
+        for indexer in [si, [si], np.array([si]), pd.Index([si])]:
+            assert _normalize_index(indexer, index) == np.array([single_indices[0]])
+            assert _normalize_index(indexer, index, as_idx=False) == np.array(
+                [single_indices[1]]
+            )
+
+    for mi in multiple_indices:
+        for indexer in [mi, np.array(mi), pd.Index(mi)]:
+            assert (
+                _normalize_index(indexer, index) == np.array(multiple_indices[0])
+            ).all()
+            assert (
+                _normalize_index(indexer, index, as_idx=False)
+                == np.array(multiple_indices[1])
+            ).all()
+
+
+def test_normalize_index_incorrect():
+    index = pd.Index([str(i) for i in range(10)])
+
+    with pytest.raises(IndexError, match="Empty index"):
+        _normalize_index([], index)
+
+    with pytest.raises(IndexError, match="Empty index"):
+        _normalize_index([False], index)
 
 
 def test_get_observations_view(data_gen):

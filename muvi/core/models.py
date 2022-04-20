@@ -1,4 +1,6 @@
 import logging
+import os
+import pickle
 from typing import Callable, Dict, List, Union
 
 import numpy as np
@@ -1352,3 +1354,29 @@ class MuVIGuide(PyroModule):
             output_dict["z"] = pyro.sample("z", dist.Normal(z_loc, z_scale))
             # output_dict["z"] = self._sample_normal("z")
         return output_dict
+
+
+def save(model, dir_path="."):
+    model_path = os.path.join(dir_path, "model.pkl")
+    params_path = os.path.join(dir_path, "params.save")
+    if os.path.isfile(model_path):
+        logger.warning("`%s` already exists, overwriting.", model_path)
+    if os.path.isfile(params_path):
+        logger.warning("`%s` already exists, overwriting.", params_path)
+    if not os.path.isdir(os.path.dirname(dir_path)) and (
+        os.path.dirname(dir_path) != ""
+    ):
+        os.makedirs(dir_path)
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+    pyro.get_param_store().save(params_path)
+
+
+def load(dir_path="."):
+    model_path = os.path.join(dir_path, "model.pkl")
+    params_path = os.path.join(dir_path, "params.save")
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
+    pyro.get_param_store().load(params_path)
+    # model = pyro.module("MuVI", model, update_module_params=True)
+    return model

@@ -35,6 +35,10 @@ isort = { version = ">=5.9", optional = true }
 gsea-api = "^0.3.4"
 statsmodels = "^0.13.2"
 muon = "^0.1.2"
+leidenalg = "^0.8.9"
+lifelines = "^0.27.0"
+openpyxl = "^3.0.9"
+mofapy2 = "^0.6.4"
 
 [tool.poetry.extras]
 dev = ["pytest", "pre-commit", "jupyter", "ipython", "black", "flake8", "isort"]

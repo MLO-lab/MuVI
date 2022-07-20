@@ -176,7 +176,7 @@ def factors_overview(
         p_col = "p_adj"
 
     p_df = df[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]]
-    if p_df.isna().all(None):
+    if p_df.isna().all(None) and sig_only:
         raise ValueError("No test results found in model cache, rerun `muvi.tl.test`.")
 
     p_df = p_df.fillna(1.0)
@@ -214,8 +214,8 @@ def factors_overview(
         **kwargs,
     )
     g.set_title(
-        f"Overview top factors in {view_idx} "
-        rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"
+        rf"Overview top factors in {view_idx} $\alpha = {alpha}$"
+        # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"
     )
     g.set(xlabel=r"$R^2$")
     if not show:
@@ -538,9 +538,7 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
 
     factor_adata = _get_model_cache(model).factor_adata
     if "rank_genes_groups" not in factor_adata.uns:
-        raise ValueError(
-            "No group-wise ranking found, run `muvi.tl.rank_genes_groups first.`"
-        )
+        raise ValueError("No group-wise ranking found, run `muvi.tl.rank first.`")
 
     groupby = factor_adata.uns["rank_genes_groups"]["params"]["groupby"]
     dendrogram_key = "dendrogram_" + groupby
@@ -583,7 +581,7 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
         pl_fn = type_to_fn[pl_type]
     except KeyError as e:
         raise ValueError(
-            f"`{pl_type}` is not valid. Select one of {','.join(PL_TYPES)}."
+            f"`{pl_type}` is not valid. Select one of {', '.join(PL_TYPES)}."
         ) from e
 
     if not sep_groups:
@@ -644,6 +642,16 @@ def clustermap(model, factor_idx="all", **kwargs):
         _get_model_cache(model).factor_adata[:, factor_idx], **kwargs
     )
 
+def stripplot(model, factor_idx, groupby, **kwargs):
+    y = _normalize_index(factor_idx, model.factor_names, as_idx=False)[0]
+    data = pd.concat(
+        [
+            model._cache.factor_adata.to_df()[factor_idx],
+            model._cache.factor_adata.obs[groupby],
+        ],
+        axis=1,
+    )
+    return sns.stripplot(x=groupby, y=y, data=data, **kwargs)
 
 def scatter(model, x, y, groupby=None, **kwargs):
     x = _normalize_index(x, model.factor_names, as_idx=False)[0]

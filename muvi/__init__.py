@@ -11,7 +11,7 @@ from .tools import plotting as pl
 from .tools import utils as tl
 
 logging.config.fileConfig(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "log.conf"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.conf"),
     disable_existing_loggers=False,
 )
 logging.getLogger().setLevel(logging.INFO)

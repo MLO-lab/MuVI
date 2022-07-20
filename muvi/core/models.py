@@ -153,7 +153,7 @@ class MuVI(PyroModule):
                     logger.info(
                         "Storing the index of the view `%s` "
                         "as sample names and columns "
-                        "of each dataframe feature names.",
+                        "of each dataframe as feature names.",
                         vn,
                     )
                     sample_names = new_sample_names
@@ -344,13 +344,6 @@ class MuVI(PyroModule):
         if isinstance(likelihoods, list):
             likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
-        if len(set(likelihoods.values())) > 1:
-            # TODO! fix
-            logger.warning(
-                "Different likelihoods for each view currently not supported, "
-                "using `%s` for all views.",
-                likelihoods[0],
-            )
         return likelihoods
 
     def _setup_covariates(self, covariates):
@@ -513,6 +506,7 @@ class MuVI(PyroModule):
             and np.ndarray or pd.DataFrame as values.
         """
         obs = self.observations
+        # TODO: too simple
         if predicted:
             obs = {
                 vn: self.get_factor_scores() @ loadings
@@ -962,6 +956,8 @@ class MuVI(PyroModule):
                 if stop_early:
                     break
 
+        # reset cache in case it was initialized by any of the callbacks
+        self._cache = None
         return history, stop_early
 
 
@@ -1006,6 +1002,7 @@ class MuVIModel(PyroModule):
         self.n_factors = n_factors
         self.n_covariates = n_covariates
         self.likelihoods = likelihoods
+        self.same_likelihood = len(set(self.likelihoods)) == 1
         self.global_prior_scale = (
             1.0 if global_prior_scale is None else global_prior_scale
         )
@@ -1143,17 +1140,49 @@ class MuVIModel(PyroModule):
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
             if self.n_covariates > 0:
                 y_loc = y_loc + torch.matmul(covs, output_dict["beta"])
-            if self.likelihoods[0] == "normal":
-                y_dist = dist.Normal(y_loc, torch.sqrt(output_dict["sigma"]))
-            else:
-                y_dist = dist.Bernoulli(logits=y_loc)
-            with pyro.poutine.mask(mask=mask):
-                output_dict["y"] = pyro.sample(
-                    "y",
-                    y_dist,
-                    obs=obs,
-                    infer={"is_auxiliary": True},
+
+            # if self.likelihoods[0] == "normal":
+            #     y_dist = dist.Normal(y_loc, torch.sqrt(output_dict["sigma"]))
+            # else:
+            #     y_dist = dist.Bernoulli(logits=y_loc)
+            # with pyro.poutine.mask(mask=mask):
+            #     output_dict["y"] = pyro.sample(
+            #         "y",
+            #         y_dist,
+            #         obs=obs,
+            #         infer={"is_auxiliary": True},
+            #     )
+
+            likelihoods = self.likelihoods
+            feature_offsets = self.feature_offsets
+            if self.same_likelihood:
+                likelihoods = [likelihoods[0]]
+                feature_offsets = [0, feature_offsets[-1]]
+
+            ys = []
+            for view_idx, likelihood in enumerate(likelihoods):
+                feature_idx = slice(
+                    feature_offsets[view_idx],
+                    feature_offsets[view_idx + 1],
                 )
+                if likelihood == "normal":
+                    y_dist = dist.Normal(
+                        y_loc[..., feature_idx],
+                        torch.sqrt(output_dict["sigma"][..., feature_idx]),
+                    )
+                else:
+                    y_dist = dist.Bernoulli(logits=y_loc[..., feature_idx])
+
+                with pyro.poutine.mask(mask=mask[..., feature_idx]):
+                    ys.append(
+                        pyro.sample(
+                            f"y_{view_idx}",
+                            y_dist,
+                            obs=obs[..., feature_idx],
+                            infer={"is_auxiliary": True},
+                        )
+                    )
+
         return output_dict
 
 

@@ -98,10 +98,15 @@ class Cache:
         if "neighbors" in uns_keys:
             logger.warning("Removing old neighborhood graph.")
             self.factor_adata.uns.pop("neighbors", None)
+            logger.warning("Removing old distances.")
             self.factor_adata.obsp.pop("distances", None)
+            logger.warning("Removing old connectivities.")
             self.factor_adata.obsp.pop("connectivities", None)
 
         # remove dendrogram information
         for key in uns_keys:
             if "dendrogram" in key:
+                logger.warning("Removing old dendrogram.")
                 self.factor_adata.uns.pop(key, None)
+                
+        logger.info("Factors filtered successfully.")

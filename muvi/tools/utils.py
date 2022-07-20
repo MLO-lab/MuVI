@@ -48,6 +48,10 @@ def filter_factors(model, factor_idx: Index):
     return model_cache.filter_factors(factor_idx)
 
 
+def _sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
 def _recon_error(
     model,
     view_idx,
@@ -132,12 +136,16 @@ def _recon_error(
         y_pred_view = np.zeros_like(y_true_view)
         if valid_factor_idx:
             y_pred_view += z @ ws[vn]
+            if model.likelihoods[vn] == "bernoulli":
+                y_pred_view = _sigmoid(y_pred_view)
         if valid_cov_idx:
             y_pred_view += x @ betas[vn]
         view_scores[vn] = metric_fn(y_true_view, y_pred_view)
         if factor_wise:
             for k in range(n_factors):
                 y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
+                if model.likelihoods[vn] == "bernoulli":
+                    y_pred_fac_k = _sigmoid(y_pred_fac_k)
                 factor_scores[score_key][k] = metric_fn(y_true_view, y_pred_fac_k)
         if cov_wise:
             for k in range(n_covariates):
@@ -490,7 +498,7 @@ def umap(model, **kwargs):
     return sc.tl.umap(setup_cache(model).factor_adata, **kwargs)
 
 
-def rank(model, groupby, method="t-test_overestim_var", **kwargs):
+def rank(model, groupby, method="wilcoxon", **kwargs):
     """Rank factors for characterizing groups."""
     if "rankby_abs" not in kwargs:
         kwargs["rankby_abs"] = True
@@ -503,7 +511,7 @@ def dendrogram(model, groupby, **kwargs):
     """Compute hierarchical clustering for the given `groupby` categories."""
     model_cache = setup_cache(model)
     kwargs["use_rep"] = model_cache.use_rep
-    kwargs["n_pcs"] = 0
+    kwargs["n_pcs"] = None
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
 
 
@@ -513,13 +521,14 @@ def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **k
     observations = {
         view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
     }
-    prior_masks = None
+    prior_masks = {}
     if prior_mask_key is not None:
-        prior_masks = {
-            view_name: mdata.mod[view_name].varm[prior_mask_key].T.copy()
-            for view_name in view_names
-        }
-
+        for view_name in view_names:
+            if prior_mask_key in mdata.mod[view_name].varm:
+                prior_masks[view_name] = mdata.mod[view_name].varm[prior_mask_key].T.copy()
+            else:
+                logger.warning(f"No prior information found for `{view_name}`.")
+            
     covariates = None
     if covariate_key is not None:
         covariates = mdata.obsm[covariate_key].copy()

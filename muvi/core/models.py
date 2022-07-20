@@ -1114,7 +1114,7 @@ class MuVIModel(PyroModule):
                     dist.Normal(
                         self._zeros(1),
                         (self.global_prior_scale * c * lmbda)
-                        / torch.sqrt(c ** 2 + lmbda ** 2),
+                        / torch.sqrt(c**2 + lmbda**2),
                     ),
                 )
 

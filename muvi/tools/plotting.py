@@ -642,6 +642,7 @@ def clustermap(model, factor_idx="all", **kwargs):
         _get_model_cache(model).factor_adata[:, factor_idx], **kwargs
     )
 
+
 def stripplot(model, factor_idx, groupby, **kwargs):
     y = _normalize_index(factor_idx, model.factor_names, as_idx=False)[0]
     data = pd.concat(
@@ -652,6 +653,7 @@ def stripplot(model, factor_idx, groupby, **kwargs):
         axis=1,
     )
     return sns.stripplot(x=groupby, y=y, data=data, **kwargs)
+
 
 def scatter(model, x, y, groupby=None, **kwargs):
     x = _normalize_index(x, model.factor_names, as_idx=False)[0]

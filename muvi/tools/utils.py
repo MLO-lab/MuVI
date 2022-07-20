@@ -525,10 +525,12 @@ def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **k
     if prior_mask_key is not None:
         for view_name in view_names:
             if prior_mask_key in mdata.mod[view_name].varm:
-                prior_masks[view_name] = mdata.mod[view_name].varm[prior_mask_key].T.copy()
+                prior_masks[view_name] = (
+                    mdata.mod[view_name].varm[prior_mask_key].T.copy()
+                )
             else:
                 logger.warning(f"No prior information found for `{view_name}`.")
-            
+
     covariates = None
     if covariate_key is not None:
         covariates = mdata.obsm[covariate_key].copy()

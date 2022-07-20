@@ -108,5 +108,5 @@ class Cache:
             if "dendrogram" in key:
                 logger.warning("Removing old dendrogram.")
                 self.factor_adata.uns.pop(key, None)
-                
+
         logger.info("Factors filtered successfully.")

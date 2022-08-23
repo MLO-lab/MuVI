@@ -99,6 +99,20 @@ class MuVI(PyroModule):
         self._trained = False
         self._cache = None
 
+    @property
+    def _factor_signs(self):
+        signs = 1.0
+        if self._trained:
+            w = self._guide.get_w()
+            # TODO: looking at top loadings works better than including all
+            # 100 feels a bit arbitrary though
+            w = np.array(
+                list(map(lambda x, y: y[x], np.argsort(-np.abs(w), axis=1)[:, :100], w))
+            )
+            signs = (w.sum(axis=1) > 0) * 2 - 1
+
+        return pd.Series(signs, index=self.factor_names, dtype=np.float32)
+
     def _validate_index(self, idx):
         if not is_string_dtype(idx):
             logger.warning("Transforming to str index.")
@@ -387,6 +401,11 @@ class MuVI(PyroModule):
         other_names,
         as_df,
     ):
+        if not self._trained:
+            raise AttributeError(
+                "Requested attribute cannot be found on an untrained model! "
+                "Run the `fit` method to train a MuVI model."
+            )
         if view_idx is None and isinstance(feature_idx, dict):
             view_idx = []
             for key in feature_idx.keys():
@@ -463,6 +482,11 @@ class MuVI(PyroModule):
         other_names,
         as_df,
     ):
+        if not self._trained:
+            raise AttributeError(
+                "Requested attribute cannot be found on an untrained model! "
+                "Run the `fit` method to train a MuVI model."
+            )
         sample_idx = _normalize_index(sample_idx, self.sample_names)
         other_idx = _normalize_index(other_idx, other_names)
         attr = attr[sample_idx, :][:, other_idx]
@@ -587,6 +611,7 @@ class MuVI(PyroModule):
         """
 
         ws = self._guide.get_w(as_list=True)
+        ws = [w * self._factor_signs.to_numpy()[:, np.newaxis] for w in ws]
         return self._get_view_attr(
             {vn: ws[m] for m, vn in enumerate(self.view_names)},
             view_idx,
@@ -655,7 +680,7 @@ class MuVI(PyroModule):
             A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_factors`.
         """
         return self._get_shared_attr(
-            self._guide.get_z(),
+            self._guide.get_z() * self._factor_signs.to_numpy(),
             sample_idx,
             other_idx=factor_idx,
             other_names=self.factor_names,
@@ -958,6 +983,7 @@ class MuVI(PyroModule):
 
         # reset cache in case it was initialized by any of the callbacks
         self._cache = None
+        self._trained = True
         return history, stop_early
 
 
@@ -1136,22 +1162,9 @@ class MuVIModel(PyroModule):
                 dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
             )
 
-            # TODO! extend to multiple different likelihoods
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
             if self.n_covariates > 0:
                 y_loc = y_loc + torch.matmul(covs, output_dict["beta"])
-
-            # if self.likelihoods[0] == "normal":
-            #     y_dist = dist.Normal(y_loc, torch.sqrt(output_dict["sigma"]))
-            # else:
-            #     y_dist = dist.Bernoulli(logits=y_loc)
-            # with pyro.poutine.mask(mask=mask):
-            #     output_dict["y"] = pyro.sample(
-            #         "y",
-            #         y_dist,
-            #         obs=obs,
-            #         infer={"is_auxiliary": True},
-            #     )
 
             likelihoods = self.likelihoods
             feature_offsets = self.feature_offsets

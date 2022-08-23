@@ -572,6 +572,8 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
             factor_adata.uns["rank_genes_groups"]["params"]["groupby"]
         ].unique()
     )
+    if "groups" in kwargs and kwargs["groups"] is not None:
+        n_groups = len(kwargs["groups"])
 
     positions = np.linspace(
         n_factors, n_factors * n_groups, num=n_groups - 1, endpoint=False
@@ -655,8 +657,45 @@ def stripplot(model, factor_idx, groupby, **kwargs):
     return sns.stripplot(x=groupby, y=y, data=data, **kwargs)
 
 
-def scatter(model, x, y, groupby=None, **kwargs):
+def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):
     x = _normalize_index(x, model.factor_names, as_idx=False)[0]
     y = _normalize_index(y, model.factor_names, as_idx=False)[0]
     kwargs["color"] = groupby
-    return sc.pl.scatter(_get_model_cache(model).factor_adata, x, y, **kwargs)
+    adata = _get_model_cache(model).factor_adata
+
+    if style is None:
+        return sc.pl.scatter(adata, x, y, **kwargs)
+
+    df = pd.concat([adata.to_df(), adata.obs.copy()], axis=1)
+    size = kwargs.pop("size", None)
+    show = kwargs.pop("show", None)
+    save = kwargs.pop("save", None)
+
+    logger.warning(
+        "Experimental! "
+        "Passing a `style` argument does not rely on `sc.pl.scatter`, "
+        "and may lead to undesired results. "
+        "Set `style=None` to fall back to the default behaviour."
+    )
+    kwargs = {}
+
+    if size is None:
+        size = 120000 / df.shape[0]
+    g = sns.scatterplot(
+        data=df,
+        x=x,
+        y=y,
+        hue=groupby,
+        style=style,
+        markers=markers,
+        s=size,
+        palette=adata.uns[f"{groupby}_colors"].tolist(),
+        legend="auto",
+        ax=None,
+        **kwargs,
+    )
+
+    g.legend(frameon=False, bbox_to_anchor=(1.04, 0.9), loc="upper left")
+    if not show:
+        return g
+    return savefig_or_show("scatter", show=show, save=save)

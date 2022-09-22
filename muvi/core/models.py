@@ -1415,11 +1415,12 @@ def save(model, dir_path="."):
     pyro.get_param_store().save(params_path)
 
 
-def load(dir_path="."):
+def load(dir_path=".", with_params=True):
     model_path = os.path.join(dir_path, "model.pkl")
     params_path = os.path.join(dir_path, "params.save")
     with open(model_path, "rb") as f:
         model = pickle.load(f)
-    pyro.get_param_store().load(params_path)
+    if with_params:
+        pyro.get_param_store().load(params_path)
     # model = pyro.module("MuVI", model, update_module_params=True)
     return model

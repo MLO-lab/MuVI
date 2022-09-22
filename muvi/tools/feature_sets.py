@@ -304,6 +304,8 @@ def load_pathways(
     max_gene_count: Union[int, List[int]] = -1,
     keep: List[str] = None,
     remove: List[str] = None,
+    msigdb_path: str = config.MSIGDB_DIR,
+    msigdb_version: str = "2022.1.Hs",
 ):
     """Load pathways from the existing msigdb."""
 
@@ -327,7 +329,7 @@ def load_pathways(
         remove = []
 
     # load msigdb files located at ./msigdb (.gmt extension)
-    msigdb = MolecularSignaturesDatabase(config.MSIGDB_DIR, version="7.5.1")
+    msigdb = MolecularSignaturesDatabase(msigdb_path, version=msigdb_version)
 
     all_gene_sets = tuple()
     size_dfs = []

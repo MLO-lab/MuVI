@@ -963,6 +963,7 @@ class MuVI(PyroModule):
         pyro.clear_param_store()
 
         logger.info("Starting training...")
+        self._trained = True
         stop_early = False
         history = []
         pbar = range(n_epochs)
@@ -983,7 +984,6 @@ class MuVI(PyroModule):
 
         # reset cache in case it was initialized by any of the callbacks
         self._cache = None
-        self._trained = True
         return history, stop_early
 
 
@@ -1405,10 +1405,11 @@ def save(model, dir_path="."):
         logger.warning("`%s` already exists, overwriting.", model_path)
     if os.path.isfile(params_path):
         logger.warning("`%s` already exists, overwriting.", params_path)
-    if not os.path.isdir(os.path.dirname(dir_path)) and (
-        os.path.dirname(dir_path) != ""
-    ):
-        os.makedirs(dir_path)
+    os.makedirs(dir_path, exist_ok=True)
+    # if not os.path.isdir(os.path.dirname(dir_path)) and (
+    #     os.path.dirname(dir_path) != ""
+    # ):
+    #     os.makedirs(dir_path)
     with open(model_path, "wb") as f:
         pickle.dump(model, f)
     pyro.get_param_store().save(params_path)

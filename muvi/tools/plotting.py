@@ -142,6 +142,7 @@ def factors_overview(
     one_sided=True,
     alpha=0.1,
     sig_only=False,
+    prior_only=False,
     adjusted=False,
     sort=25,
     show: bool = None,
@@ -158,6 +159,9 @@ def factors_overview(
 
     name_col = "Factor"
     df[name_col] = df.index.astype(str)
+
+    if prior_only:
+        df = df.loc[~df[name_col].str.contains("dense", case=False), :].copy()
 
     size_col = None
     if model._informed:
@@ -689,7 +693,7 @@ def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):
         style=style,
         markers=markers,
         s=size,
-        palette=adata.uns[f"{groupby}_colors"].tolist(),
+        palette=adata.uns[f"{groupby}_colors"],
         legend="auto",
         ax=None,
         **kwargs,

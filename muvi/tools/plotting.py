@@ -658,7 +658,9 @@ def stripplot(model, factor_idx, groupby, **kwargs):
         ],
         axis=1,
     )
-    return sns.stripplot(x=groupby, y=y, data=data, **kwargs)
+    return sns.stripplot(
+        x=groupby, y=y, data=data, hue=kwargs.pop("hue", groupby), **kwargs
+    )
 
 
 def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):

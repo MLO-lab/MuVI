@@ -45,7 +45,7 @@ class MuVI(PyroModule):
         prior_confidence: float = 0.99,
         n_factors: int = None,
         view_names: List[str] = None,
-        likelihoods: List[str] = None,
+        likelihoods: Union[Dict[str, str], List[str]] = None,
         use_gpu: bool = True,
     ):
         """MuVI module.
@@ -71,8 +71,8 @@ class MuVI(PyroModule):
             List of names for each view,
             determines view order as well,
             by default None
-        likelihoods : List[str], optional
-            List of likelihoods for each view,
+        likelihoods : Union[Dict[str, str], List[str]], optional
+            Likelihoods for each view,
             either "normal" or "bernoulli",
             by default None (all "normal")
         use_gpu : bool, optional
@@ -119,12 +119,7 @@ class MuVI(PyroModule):
             return idx.astype(str)
         return idx
 
-    def _setup_observations(self, observations, view_names):
-        if observations is None:
-            raise ValueError(
-                "Observations is None, please provide a valid list of observations."
-            )
-
+    def _setup_views(self, observations, view_names):
         n_views = len(observations)
         if n_views == 1:
             logger.warning("Running MuVI on a single view.")
@@ -133,7 +128,8 @@ class MuVI(PyroModule):
             logger.warning("No view names provided!")
             if isinstance(observations, list):
                 logger.info(
-                    "Setting the name of each view to `view_idx` for list observations."
+                    "Setting the name of each view to `view_idx` "
+                    "for list observations."
                 )
                 view_names = [f"view_{m}" for m in range(n_views)]
             if isinstance(observations, dict):
@@ -142,51 +138,85 @@ class MuVI(PyroModule):
                     "of dictonary keys in observations."
                 )
                 view_names = sorted(observations.keys())
+
+        if n_views > len(view_names):
+            logger.warning(
+                "Number of views is larger than the length of `view_names`, "
+                "using only the subset of views defined in `view_names`."
+            )
+            n_views = len(view_names)
+
         view_names = pd.Index(view_names)
         # if list convert to dict
         if isinstance(observations, list):
-            observations = {vn: obs for vn, obs in zip(view_names, observations)}
+            observations = dict(zip(view_names, observations))
 
-        n_samples = observations[view_names[0]].shape[0]
+        self.n_views = n_views
+        self.view_names = self._validate_index(view_names)
+        return observations
+
+    def _setup_samples(self, observations):
+
+        n_samples = 0
         sample_names = None
-        n_features = {vn: 0 for vn in view_names}
-        feature_names = {vn: None for vn in view_names}
-        for vn in view_names:
-            y = observations[vn]
-            if y.shape[0] != n_samples:
+
+        for vn in self.view_names:
+            view_obs = observations[vn]
+            view_n_samples = view_obs.shape[0]
+
+            if n_samples == 0:
+                n_samples = view_n_samples
+
+            if n_samples != view_n_samples:
                 raise ValueError(
-                    f"View `{vn}` has {y.shape[0]} samples instead of {n_samples}, "
+                    f"View `{vn}` has {view_n_samples} samples "
+                    f"instead of {n_samples}, "
                     "all views must have the same number of samples."
                 )
-            n_features[vn] = y.shape[1]
-            if isinstance(y, pd.DataFrame):
+
+            if isinstance(view_obs, pd.DataFrame):
                 logger.info("pd.DataFrame detected.")
 
-                new_sample_names = y.index.copy()
+                view_sample_names = view_obs.index.copy()
+
                 if sample_names is None:
                     logger.info(
-                        "Storing the index of the view `%s` "
-                        "as sample names and columns "
-                        "of each dataframe as feature names.",
+                        "Storing the index of the view `%s` " "as sample names.",
                         vn,
                     )
-                    sample_names = new_sample_names
-                if any(sample_names != new_sample_names):
+                    sample_names = view_sample_names
+
+                if any(sample_names != view_sample_names):
                     logger.info(
                         "Sample names for view `%s` "
                         "do not match the sample names of view `%s`, "
                         "sorting names according to view `%s`.",
                         vn,
-                        view_names[0],
-                        view_names[0],
+                        self.view_names[0],
+                        self.view_names[0],
                     )
-                    observations[vn] = y.loc[sample_names, :]
-                feature_names[vn] = y.columns.copy()
+                    view_obs = view_obs.loc[sample_names, :]
 
         if sample_names is None:
             logger.info("Setting the name of each sample to `sample_idx`.")
             sample_names = pd.Index([f"sample_{i}" for i in range(n_samples)])
-        for vn in view_names:
+
+        self.sample_names = self._validate_index(sample_names)
+        self.n_samples = n_samples
+
+        return observations
+
+    def _setup_features(self, observations):
+
+        n_features = {vn: 0 for vn in self.view_names}
+        feature_names = {vn: None for vn in self.view_names}
+
+        for vn in self.view_names:
+            view_obs = observations[vn]
+            n_features[vn] = view_obs.shape[1]
+            if isinstance(view_obs, pd.DataFrame):
+                logger.info("pd.DataFrame detected.")
+                feature_names[vn] = view_obs.columns.copy()
             if feature_names[vn] is None:
                 logger.info(
                     "Setting the name of each feature in `%s` to `%s_feature_idx`.",
@@ -197,18 +227,31 @@ class MuVI(PyroModule):
                     [f"{vn}_feature_{j}" for j in range(n_features[vn])]
                 )
 
-        self.n_samples = n_samples
-        self.n_views = n_views
-        self.n_features = n_features
-        self.sample_names = self._validate_index(sample_names)
-        self.view_names = self._validate_index(view_names)
-        self.feature_names = {
-            vn: self._validate_index(fn) for vn, fn in feature_names.items()
-        }
+            feature_names[vn] = self._validate_index(feature_names[vn])
 
-        # keep only numpy arrays
+        self.feature_names = feature_names
+        self.n_features = n_features
+
+        return observations
+
+    def _setup_observations(self, observations, view_names):
+        if observations is None:
+            raise ValueError(
+                "Observations is None, please provide a valid list of observations."
+            )
+
+        observations = self._setup_views(observations, view_names)
+        # from now on only working with nested dictonaries
+        observations = self._setup_samples(observations)
+        observations = self._setup_features(observations)
+
+        # keep only numpy arrays, convert to np.float32 dtypes
         return {
-            vn: (obs.to_numpy() if isinstance(obs, pd.DataFrame) else obs)
+            vn: (
+                obs.to_numpy(dtype=np.float32)
+                if isinstance(obs, pd.DataFrame)
+                else np.array(obs, dtype=np.float32)
+            )
             for vn, obs in observations.items()
         }
 
@@ -250,31 +293,23 @@ class MuVI(PyroModule):
         if n_factors is None:
             n_factors = n_prior_factors
 
-        if n_prior_factors != n_factors:
-            # TODO: implement dense
+        if n_prior_factors > n_factors:
             logger.warning(
-                "Prior mask informs %s factors instead of %s as pre-defined, "
-                "updating `n_factors` to %s.",
-                n_prior_factors,
-                n_factors,
+                "Prior mask informs more factors than the pre-defined `n_factors`. "
+                "Updating `n_factors` to %s.",
                 n_prior_factors,
             )
             n_factors = n_prior_factors
 
-        # if n_prior_factors > n_factors:
-        #     logger.warning(
-        #         "Prior mask informs more factors than the pre-defined `n_factors`. "
-        #         "Updating `n_factors` to %s.",
-        #         n_prior_factors,
-        #     )
-        #     n_factors = n_prior_factors
-
-        # if n_prior_factors < n_factors:
-        #     logger.warning(
-        #         "Prior mask informs fewer factors than the pre-defined `n_factors`. "
-        #         "Informing only the first %s factors.",
-        #         n_prior_factors,
-        #     )
+        n_dense_factors = 0
+        if n_prior_factors < n_factors:
+            logger.warning(
+                "Prior mask informs fewer factors than the pre-defined `n_factors`. "
+                "Informing only the first %s factors, the rest remains uninformed.",
+                n_prior_factors,
+            )
+            # extend all prior masks with additional uninformed factors
+            n_dense_factors = n_factors - n_prior_factors
 
         factor_names = None
         for vn in self.view_names:
@@ -289,10 +324,10 @@ class MuVI(PyroModule):
                 masks[vn] = np.zeros((n_factors, self.n_features[vn]))
                 continue
             view_mask = masks[vn]
-            if view_mask.shape[0] != n_factors:
+            if view_mask.shape[0] != n_factors - n_dense_factors:
                 raise ValueError(
                     f"Mask `{vn}` has {view_mask.shape[0]} factors "
-                    f"instead of {n_factors}, "
+                    f"instead of {n_factors - n_dense_factors}, "
                     "all masks must have the same number of factors."
                 )
             if view_mask.shape[1] != self.n_features[vn]:
@@ -305,13 +340,13 @@ class MuVI(PyroModule):
             if isinstance(view_mask, pd.DataFrame):
                 logger.info("pd.DataFrame detected.")
 
-                new_factor_names = view_mask.index.copy()
+                mask_factor_names = view_mask.index.copy()
                 if factor_names is None:
                     logger.info(
                         "Storing the index of the mask `%s` as factor names.", vn
                     )
-                    factor_names = new_factor_names
-                if any(factor_names != new_factor_names):
+                    factor_names = mask_factor_names
+                if any(factor_names != mask_factor_names):
                     logger.info(
                         "Factor names for mask `%s` "
                         "do not match the factor names of mask `%s`, "
@@ -332,8 +367,12 @@ class MuVI(PyroModule):
                     masks[vn] = view_mask.loc[:, self.feature_names[vn]]
 
         if factor_names is None:
-            factor_names = pd.Index([f"factor_{k}" for k in range(n_factors)])
-        self.factor_names = self._validate_index(factor_names)
+            factor_names = [f"factor_{k}" for k in range(n_factors)]
+        if n_dense_factors > 0:
+            factor_names = list(factor_names) + [
+                f"dense_{k}" for k in range(n_dense_factors)
+            ]
+        self.factor_names = self._validate_index(pd.Index(factor_names))
 
         # keep only numpy arrays
         prior_masks = {
@@ -344,6 +383,15 @@ class MuVI(PyroModule):
             )
             for vn, vm in masks.items()
         }
+        # add dense factors if necessary
+        if n_dense_factors > 0:
+            prior_masks = {
+                vn: np.concatenate(
+                    [vm, np.ones((n_dense_factors, self.n_features[vn]))]
+                )
+                for vn, vm in masks.items()
+            }
+
         prior_scales = {
             vn: np.clip(vm.astype(np.float32) + (1.0 - confidence), 1e-4, 1.0)
             for vn, vm in prior_masks.items()
@@ -358,6 +406,7 @@ class MuVI(PyroModule):
         if isinstance(likelihoods, list):
             likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
+        logger.info("Likelihoods set to %s", likelihoods)
         return likelihoods
 
     def _setup_covariates(self, covariates):
@@ -392,6 +441,14 @@ class MuVI(PyroModule):
         self.covariate_names = covariate_names
         return covariates
 
+    def _raise_untrained_error(self):
+        if not self._trained:
+            raise AttributeError(
+                "Requested attribute cannot be found on an untrained model! "
+                "Run the `fit` method to train a MuVI model."
+            )
+        return True
+
     def _get_view_attr(
         self,
         attr,
@@ -401,11 +458,6 @@ class MuVI(PyroModule):
         other_names,
         as_df,
     ):
-        if not self._trained:
-            raise AttributeError(
-                "Requested attribute cannot be found on an untrained model! "
-                "Run the `fit` method to train a MuVI model."
-            )
         if view_idx is None and isinstance(feature_idx, dict):
             view_idx = []
             for key in feature_idx.keys():
@@ -482,11 +534,6 @@ class MuVI(PyroModule):
         other_names,
         as_df,
     ):
-        if not self._trained:
-            raise AttributeError(
-                "Requested attribute cannot be found on an untrained model! "
-                "Run the `fit` method to train a MuVI model."
-            )
         sample_idx = _normalize_index(sample_idx, self.sample_names)
         other_idx = _normalize_index(other_idx, other_names)
         attr = attr[sample_idx, :][:, other_idx]
@@ -609,6 +656,7 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
+        self._raise_untrained_error()
 
         ws = self._guide.get_w(as_list=True)
         ws = [w * self._factor_signs.to_numpy()[:, np.newaxis] for w in ws]
@@ -648,6 +696,7 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
+        self._raise_untrained_error()
 
         betas = self._guide.get_beta(as_list=True)
         return self._get_view_attr(
@@ -679,6 +728,8 @@ class MuVI(PyroModule):
         Union[np.ndarray, pd.DataFrame]
             A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_factors`.
         """
+        self._raise_untrained_error()
+
         return self._get_shared_attr(
             self._guide.get_z() * self._factor_signs.to_numpy(),
             sample_idx,

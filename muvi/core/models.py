@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 Index = Union[int, str, List[int], List[str], np.ndarray, pd.Index]
 SingleView = Union[np.ndarray, pd.DataFrame]
 MultiView = Union[Dict[str, SingleView], List[SingleView]]
+MultiGroup = MultiView
+MultiViewGroup = Union[Dict[str, MultiView], List[MultiView]]
 
 
 class TensorDataset(Dataset):
@@ -39,11 +41,12 @@ class TensorDataset(Dataset):
 class MuVI(PyroModule):
     def __init__(
         self,
-        observations: MultiView,
+        observations: MultiViewGroup,
         prior_masks: MultiView = None,
-        covariates: SingleView = None,
+        covariates: MultiGroup = None,
         prior_confidence: float = 0.99,
         n_factors: int = None,
+        group_names: List[str] = None,
         view_names: List[str] = None,
         likelihoods: Union[Dict[str, str], List[str]] = None,
         use_gpu: bool = True,
@@ -52,13 +55,13 @@ class MuVI(PyroModule):
 
         Parameters
         ----------
-        observations : MultiView
-            Collection of observations as list or dict.
+        observations : MultiViewGroup
+            Collection of observations as list (group) of lists (view) or dict of dicts.
         prior_masks : MultiView, optional
             Prior feature sets as a collection of binary masks,
             by default None
-        covariates : SingleView, optional
-            Additional observed covariates, by default None
+        covariates : MultiGroup, optional
+            Additional observed covariates across all groups, by default None
         prior_confidence : float, optional
             Confidence of prior belief from 0 to 1 (exclusive),
             typical values are between 0.95 and 0.999,
@@ -66,6 +69,10 @@ class MuVI(PyroModule):
         n_factors : int, optional
             Number of latent factors,
             can be omitted when providing prior masks,
+            by default None
+        group_names : List[str], optional
+            List of names for each group,
+            determines group order as well,
             by default None
         view_names : List[str], optional
             List of names for each view,
@@ -79,7 +86,9 @@ class MuVI(PyroModule):
             Whether to train on a GPU, by default True
         """
         super().__init__(name="MuVI")
-        self.observations = self._setup_observations(observations, view_names)
+        self.observations = self._setup_observations(
+            observations, group_names, view_names
+        )
         self.prior_masks, self.prior_scales = self._setup_prior_masks(
             prior_masks, prior_confidence, n_factors
         )
@@ -119,37 +128,90 @@ class MuVI(PyroModule):
             return idx.astype(str)
         return idx
 
+    def _setup_groups(self, observations, group_names):
+        n_groups = len(observations)
+        if n_groups == 1:
+            logger.warning("Running MuVI on a single group.")
+
+        if group_names is None:
+            logger.warning("No group names provided!")
+            if isinstance(observations, list):
+                logger.info(
+                    "Setting the name of each group to `group_idx` "
+                    "for list observations."
+                )
+                group_names = [f"group_{g}" for g in range(n_groups)]
+            if isinstance(observations, dict):
+                logger.info(
+                    "Setting the group names to the sorted list "
+                    "of dictonary keys in observations."
+                )
+                group_names = sorted(observations.keys())
+
+        if n_groups > len(group_names):
+            logger.warning(
+                "Number of groups is larger than the length of `group_names`, "
+                "using only the subset of groups defined in `group_names`."
+            )
+            n_groups = len(group_names)
+
+        group_names = pd.Index(group_names)
+        # if list convert to dict
+        if isinstance(observations, list):
+            observations = dict(zip(group_names, observations))
+
+        self.n_groups = n_groups
+        self.group_names = self._validate_index(group_names)
+        return observations
+
     def _setup_views(self, observations, view_names):
-        n_views = len(observations)
+        # observations now a dictionary of lists/dicts
+        # first check whether all groups have the same number of views
+        n_views = None
+        for gn in self.group_names:
+            group_n_views = len(observations[gn])
+            if n_views is None:
+                n_views = group_n_views
+            else:
+                if n_views != group_n_views:
+                    raise ValueError(
+                        f"Group `{gn}` has {group_n_views} views "
+                        f"instead of {n_views}, "
+                        "all groups must have the same number of views."
+                    )
+
         if n_views == 1:
             logger.warning("Running MuVI on a single view.")
 
-        if view_names is None:
-            logger.warning("No view names provided!")
-            if isinstance(observations, list):
-                logger.info(
-                    "Setting the name of each view to `view_idx` "
-                    "for list observations."
-                )
-                view_names = [f"view_{m}" for m in range(n_views)]
-            if isinstance(observations, dict):
-                logger.info(
-                    "Setting the view names to the sorted list "
-                    "of dictonary keys in observations."
-                )
-                view_names = sorted(observations.keys())
+        for gn in self.group_names:
+            # TODO: does not consider mixture of list and dict
+            # for the view collection (does not strictly check view names..)
+            if view_names is None:
+                logger.warning("No view names provided!")
+                if isinstance(observations[gn], list):
+                    logger.info(
+                        "Setting the name of each view to `view_idx` "
+                        f"for list observations in group `{gn}`."
+                    )
+                    view_names = [f"view_{m}" for m in range(n_views)]
+                if isinstance(observations[gn], dict):
+                    logger.info(
+                        "Setting the view names to the sorted list "
+                        f"of dictonary keys for observations in group `{gn}`."
+                    )
+                    view_names = sorted(observations[gn].keys())
 
-        if n_views > len(view_names):
-            logger.warning(
-                "Number of views is larger than the length of `view_names`, "
-                "using only the subset of views defined in `view_names`."
-            )
-            n_views = len(view_names)
+            if n_views > len(view_names):
+                logger.warning(
+                    "Number of views is larger than the length of `view_names`, "
+                    "using only the subset of views defined in `view_names`."
+                )
+                n_views = len(view_names)
 
-        view_names = pd.Index(view_names)
-        # if list convert to dict
-        if isinstance(observations, list):
-            observations = dict(zip(view_names, observations))
+            view_names = pd.Index(view_names)
+            # if list convert to dict
+            if isinstance(observations[gn], list):
+                observations[gn] = dict(zip(view_names, observations[gn]))
 
         self.n_views = n_views
         self.view_names = self._validate_index(view_names)
@@ -157,71 +219,105 @@ class MuVI(PyroModule):
 
     def _setup_samples(self, observations):
 
-        n_samples = 0
-        sample_names = None
+        # samples expected to be different for groups and identical for views
+        n_samples = {gn: 0 for gn in self.group_names}
+        sample_names = {gn: None for gn in self.group_names}
 
-        for vn in self.view_names:
-            view_obs = observations[vn]
-            view_n_samples = view_obs.shape[0]
+        for gn in self.group_names:
+            for vn in self.view_names:
+                view_n_samples = observations[gn][vn].shape[0]
+                if n_samples[gn] == 0:
+                    n_samples[gn] = view_n_samples
+                if n_samples[gn] != view_n_samples:
+                    raise ValueError(
+                        f"View `{vn}` in group `{gn}` has {view_n_samples} samples "
+                        f"instead of {n_samples[gn]}, "
+                        "all views must have the same number of samples."
+                    )
 
-            if n_samples == 0:
-                n_samples = view_n_samples
+                if isinstance(observations[gn][vn], pd.DataFrame):
+                    logger.info("pd.DataFrame detected.")
 
-            if n_samples != view_n_samples:
-                raise ValueError(
-                    f"View `{vn}` has {view_n_samples} samples "
-                    f"instead of {n_samples}, "
-                    "all views must have the same number of samples."
+                    view_sample_names = observations[gn][vn].index.copy()
+
+                    if sample_names[gn] is None:
+                        logger.info(
+                            f"Storing the index of the view `{vn}` "
+                            f"in group `{gn}` as sample names."
+                        )
+                        sample_names[gn] = view_sample_names
+
+                    if any(sample_names[gn] != view_sample_names):
+                        logger.info(
+                            f"Sample names for view `{vn}` in group `{gn}` do not "
+                            f"match the sample names of view `{self.view_names[0]}` "
+                            f"within the same group, sorting names "
+                            f"according to the first view `{self.view_names[0]}`."
+                        )
+                        observations[gn][vn] = observations[gn][vn].loc[
+                            sample_names[self.group_names[0]], :
+                        ]
+
+            if sample_names[gn] is None:
+                logger.info(
+                    f"Setting the name of each sample in `{gn}` to `{gn}_sample_idx`."
+                )
+                sample_names[gn] = pd.Index(
+                    [f"{gn}_sample_{i}" for i in range(n_samples[gn])]
                 )
 
-            if isinstance(view_obs, pd.DataFrame):
-                logger.info("pd.DataFrame detected.")
+            sample_names[gn] = self._validate_index(sample_names[gn])
 
-                view_sample_names = view_obs.index.copy()
-
-                if sample_names is None:
-                    logger.info(
-                        "Storing the index of the view `%s` " "as sample names.",
-                        vn,
-                    )
-                    sample_names = view_sample_names
-
-                if any(sample_names != view_sample_names):
-                    logger.info(
-                        "Sample names for view `%s` "
-                        "do not match the sample names of view `%s`, "
-                        "sorting names according to view `%s`.",
-                        vn,
-                        self.view_names[0],
-                        self.view_names[0],
-                    )
-                    view_obs = view_obs.loc[sample_names, :]
-
-        if sample_names is None:
-            logger.info("Setting the name of each sample to `sample_idx`.")
-            sample_names = pd.Index([f"sample_{i}" for i in range(n_samples)])
-
-        self.sample_names = self._validate_index(sample_names)
         self.n_samples = n_samples
+        self.n_all_samples = sum(n_samples.values())
+        self.sample_names = sample_names
 
         return observations
 
     def _setup_features(self, observations):
 
+        # features expected to be different for views and identical for groups
         n_features = {vn: 0 for vn in self.view_names}
         feature_names = {vn: None for vn in self.view_names}
 
         for vn in self.view_names:
-            view_obs = observations[vn]
-            n_features[vn] = view_obs.shape[1]
-            if isinstance(view_obs, pd.DataFrame):
-                logger.info("pd.DataFrame detected.")
-                feature_names[vn] = view_obs.columns.copy()
+            for gn in self.group_names:
+                group_n_features = observations[gn][vn].shape[1]
+                if n_features[vn] == 0:
+                    n_features[vn] = group_n_features
+                if n_features[vn] != group_n_features:
+                    raise ValueError(
+                        f"View `{vn}` in group `{gn}` has {group_n_features} features "
+                        f"instead of {n_features[vn]}, "
+                        "all groups must have the same number of features."
+                    )
+
+                if isinstance(observations[gn][vn], pd.DataFrame):
+                    logger.info("pd.DataFrame detected.")
+
+                    group_feature_names = observations[gn][vn].columns.copy()
+
+                    if feature_names[vn] is None:
+                        logger.info(
+                            f"Storing the columns of the view `{vn}` "
+                            f"in group `{gn}` as feature names."
+                        )
+                        feature_names[vn] = group_feature_names
+
+                    if any(feature_names[vn] != group_feature_names):
+                        logger.info(
+                            f"Feature names for view `{vn}` in group `{gn}` do not "
+                            f"match the feature names of group `{self.group_names[0]}` "
+                            f"within the same view, sorting names "
+                            f"according to the first group `{self.group_names[0]}`."
+                        )
+                        observations[gn][vn] = observations[gn][vn].loc[
+                            :, feature_names[self.view_names[0]]
+                        ]
+
             if feature_names[vn] is None:
                 logger.info(
-                    "Setting the name of each feature in `%s` to `%s_feature_idx`.",
-                    vn,
-                    vn,
+                    f"Setting the name of each feature in `{vn}` to `{vn}_feature_idx`."
                 )
                 feature_names[vn] = pd.Index(
                     [f"{vn}_feature_{j}" for j in range(n_features[vn])]
@@ -229,17 +325,19 @@ class MuVI(PyroModule):
 
             feature_names[vn] = self._validate_index(feature_names[vn])
 
-        self.feature_names = feature_names
         self.n_features = n_features
+        self.n_all_features = sum(n_features.values())
+        self.feature_names = feature_names
 
         return observations
 
-    def _setup_observations(self, observations, view_names):
+    def _setup_observations(self, observations, group_names, view_names):
         if observations is None:
             raise ValueError(
                 "Observations is None, please provide a valid list of observations."
             )
 
+        observations = self._setup_groups(observations, group_names)
         observations = self._setup_views(observations, view_names)
         # from now on only working with nested dictonaries
         observations = self._setup_samples(observations)
@@ -247,12 +345,15 @@ class MuVI(PyroModule):
 
         # keep only numpy arrays, convert to np.float32 dtypes
         return {
-            vn: (
-                obs.to_numpy(dtype=np.float32)
-                if isinstance(obs, pd.DataFrame)
-                else np.array(obs, dtype=np.float32)
-            )
-            for vn, obs in observations.items()
+            gn: {
+                vn: (
+                    obs.to_numpy(dtype=np.float32)
+                    if isinstance(obs, pd.DataFrame)
+                    else np.array(obs, dtype=np.float32)
+                )
+                for vn, obs in group_obs.items()
+            }
+            for gn, group_obs in observations.items()
         }
 
     def _setup_prior_masks(self, masks, confidence, n_factors):
@@ -404,7 +505,7 @@ class MuVI(PyroModule):
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
         if isinstance(likelihoods, list):
-            likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
+            likelihoods = {self.view_names[m]: ll for m, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
         logger.info("Likelihoods set to %s", likelihoods)
         return likelihoods
@@ -412,34 +513,71 @@ class MuVI(PyroModule):
     def _setup_covariates(self, covariates):
 
         n_covariates = 0
-        if covariates is not None:
-            n_covariates = covariates.shape[1]
-
         covariate_names = None
-        if isinstance(covariates, pd.DataFrame):
-            logger.info("pd.DataFrame detected.")
-            if self.n_samples != covariates.shape[0]:
-                raise ValueError(
-                    f"Number of observed samples for ({self.n_samples}) "
-                    "does not match the number of samples "
-                    f"for the covariates ({covariates.shape[0]})."
-                )
+        if covariates is None:
+            self.n_covariates = n_covariates
+            self.covariate_names = covariate_names
+            return None
 
-            if any(self.sample_names != covariates.index):
-                logger.info(
-                    "Sample names for the covariates "
-                    "do not match the sample names of the observations, "
-                    "sorting names according to the observations."
+        if isinstance(covariates, list):
+            covariates = {
+                self.group_names[g]: group_covs
+                for g, group_covs in enumerate(covariates)
+            }
+        n_covariates = {gn: covariates[gn].shape[1] for gn in self.group_names}
+        n_covariates_set = set(n_covariates.values())
+        if len(n_covariates_set) != 1:
+            raise NotImplementedError(
+                "Handling variable number of covariates across groups is not supported."
+            )
+        n_covariates = n_covariates_set.pop()
+
+        for gn in self.group_names:
+            if isinstance(covariates[gn], pd.DataFrame):
+                logger.info("pd.DataFrame detected.")
+                if covariates[gn].shape[0] != self.n_samples[gn]:
+                    raise ValueError(
+                        f"Number of the covariate samples ({covariates[gn].shape[0]}) "
+                        f"in group `{gn}` does not match the number of "
+                        f"observed samples ({self.n_samples[gn]}) "
+                        f"within the same group."
+                    )
+
+                if any(covariates[gn].index != self.sample_names[gn]):
+                    logger.info(
+                        f"Sample names for the covariates in group `{gn}` "
+                        "do not match the sample names of the observations, "
+                        "sorting names according to the observations."
+                    )
+                    covariates[gn] = covariates[gn].loc[self.sample_names[gn], :]
+
+                if covariate_names is None:
+                    covariate_names = covariates[gn].columns.copy()
+                if any(covariates[gn].columns != covariate_names):
+                    logger.info(
+                        f"Covariate names for the covariates in group `{gn}` "
+                        f"do not match the covariate names of group `{self.group_names[0]}`, "
+                        f"sorting names according to the the names in `{self.group_names[0]}`."
+                    )
+
+                covariates[gn] = covariates[gn].to_numpy()
+            if covariate_names is None:
+                covariate_names = pd.Index(
+                    [f"covariate_{k}" for k in range(n_covariates)]
                 )
-                covariates = covariates.loc[self.sample_names, :]
-            covariate_names = covariates.columns.copy()
-            covariates = covariates.to_numpy()
-        if covariate_names is None:
-            covariate_names = pd.Index([f"covariate_{k}" for k in range(n_covariates)])
 
         self.n_covariates = n_covariates
         self.covariate_names = covariate_names
-        return covariates
+
+        # keep only numpy arrays, convert to np.float32 dtypes
+        return {
+            gn: (
+                cov.to_numpy(dtype=np.float32)
+                if isinstance(cov, pd.DataFrame)
+                else np.array(cov, dtype=np.float32)
+            )
+            for gn, cov in covariates.items()
+        }
 
     def _raise_untrained_error(self):
         if not self._trained:
@@ -448,6 +586,85 @@ class MuVI(PyroModule):
                 "Run the `fit` method to train a MuVI model."
             )
         return True
+
+    def _get_attr(
+        self,
+        attr,
+        outer_idx,
+        outer_names,
+        inner_idx,
+        inner_names,
+        other_idx,
+        other_names,
+        as_df,
+    ):
+        if outer_idx is None and isinstance(inner_idx, dict):
+            outer_idx = []
+            for key in inner_idx.keys():
+                oi = key
+                if isinstance(oi, int):
+                    oi = outer_names[oi]
+                outer_idx.append(oi)
+        if outer_idx is None:
+            raise IndexError(
+                "Invalid indices, `outer_idx` is None "
+                "and `inner_idx` is not a dictionary."
+            )
+        # get relevant outer names
+        outer_names = _normalize_index(outer_idx, outer_names, as_idx=False)
+        if isinstance(inner_idx, (str, int)):
+            if inner_idx == "all":
+                inner_idx = ["all" for _ in range(len(outer_names))]
+            else:
+                inner_idx = [inner_idx]
+
+        # convert to list if any list-like indexing
+        if isinstance(inner_idx, (list, np.ndarray, pd.Index)):
+            inner_idx = list(inner_idx)
+
+        # check if valid combination of indices
+        if len(outer_names) == 1 and len(inner_idx) != 1:
+            if isinstance(inner_idx[0], list):
+                logger.warning(
+                    "`inner_idx` suggests indices for more than one outer dim, "
+                    "keeping only the first list of indices."
+                )
+                inner_idx = inner_idx[0]
+            inner_idx = [inner_idx]
+
+        if len(outer_names) != len(inner_idx):
+            logger.warning(
+                "`outer_idx` does not match the keys of `inner_idx`, "
+                "`outer_idx` has precedence over `inner_idx`."
+            )
+
+        if isinstance(inner_idx, list):
+            inner_idx = {on: inner_idx[i] for i, on in enumerate(outer_names)}
+
+        if isinstance(inner_idx, dict):
+            inner_idx = {
+                # TODO!: (self.view_names[k] if isinstance(k, int) else k): v
+                (outer_names[k] if isinstance(k, int) else k): v
+                for k, v in inner_idx.items()
+            }
+
+        # normalise dictionary
+        inner_idx = {
+            on: _normalize_index(inner_idx[on], inner_names[on]) for on in outer_names
+        }
+        other_idx = _normalize_index(other_idx, other_names)
+
+        attr = {on: attr[on][other_idx, :][:, inner_idx[on]] for on in outer_names}
+        if as_df:
+            attr = {
+                on: pd.DataFrame(
+                    attr[on],
+                    index=other_names[other_idx],
+                    columns=inner_names[on][inner_idx[on]],
+                )
+                for on in outer_names
+            }
+        return attr
 
     def _get_view_attr(
         self,
@@ -458,95 +675,42 @@ class MuVI(PyroModule):
         other_names,
         as_df,
     ):
-        if view_idx is None and isinstance(feature_idx, dict):
-            view_idx = []
-            for key in feature_idx.keys():
-                vi = key
-                if isinstance(vi, int):
-                    vi = self.view_names[vi]
-                view_idx.append(vi)
-        if view_idx is None:
-            raise IndexError(
-                "Invalid indices, `view_idx` is None "
-                "and `feature_idx` is not a dictionary."
-            )
-        # get relevant view names
-        view_names = _normalize_index(view_idx, self.view_names, as_idx=False)
-        if isinstance(feature_idx, (str, int)):
-            if feature_idx == "all":
-                feature_idx = ["all" for _ in range(len(view_names))]
-            else:
-                feature_idx = [feature_idx]
 
-        # convert to list if any list-like indexing
-        if isinstance(feature_idx, (list, np.ndarray, pd.Index)):
-            feature_idx = list(feature_idx)
+        return self._get_attr(
+            attr,
+            outer_idx=view_idx,
+            outer_names=self.view_names,
+            inner_idx=feature_idx,
+            inner_names=self.feature_names,
+            other_idx=other_idx,
+            other_names=other_names,
+            as_df=as_df,
+        )
 
-        # check if valid combination of indices
-        if len(view_names) == 1 and len(feature_idx) != 1:
-            if isinstance(feature_idx[0], list):
-                logger.warning(
-                    "`feature_idx` suggests indices for more than one view, "
-                    "keeping only the first list of indices."
-                )
-                feature_idx = feature_idx[0]
-            feature_idx = [feature_idx]
-
-        if len(view_names) != len(feature_idx):
-            logger.warning(
-                "`view_idx` does not match the keys of `feature_idx`, "
-                "`view_idx` has precedence over `feature_idx`."
-            )
-
-        if isinstance(feature_idx, list):
-            feature_idx = {vn: feature_idx[m] for m, vn in enumerate(view_names)}
-
-        if isinstance(feature_idx, dict):
-            feature_idx = {
-                (self.view_names[k] if isinstance(k, int) else k): v
-                for k, v in feature_idx.items()
-            }
-
-        # normalise dictionary
-        feature_idx = {
-            vn: _normalize_index(feature_idx[vn], self.feature_names[vn])
-            for vn in view_names
-        }
-        other_idx = _normalize_index(other_idx, other_names)
-
-        attr = {vn: attr[vn][other_idx, :][:, feature_idx[vn]] for vn in view_names}
-        if as_df:
-            attr = {
-                vn: pd.DataFrame(
-                    attr[vn],
-                    index=other_names[other_idx],
-                    columns=self.feature_names[vn][feature_idx[vn]],
-                )
-                for vn in view_names
-            }
-        return attr
-
-    def _get_shared_attr(
+    def _get_group_attr(
         self,
         attr,
+        group_idx,
         sample_idx,
         other_idx,
         other_names,
         as_df,
     ):
-        sample_idx = _normalize_index(sample_idx, self.sample_names)
-        other_idx = _normalize_index(other_idx, other_names)
-        attr = attr[sample_idx, :][:, other_idx]
-        if as_df:
-            attr = pd.DataFrame(
-                attr,
-                index=self.sample_names[sample_idx],
-                columns=other_names[other_idx],
-            )
-        return attr
+
+        return self._get_attr(
+            attr,
+            outer_idx=group_idx,
+            outer_names=self.group_names,
+            inner_idx=sample_idx,
+            inner_names=self.sample_names,
+            other_idx=other_idx,
+            other_names=other_names,
+            as_df=as_df,
+        )
 
     def get_observations(
         self,
+        group_idx: Index = "all",
         view_idx: Index = "all",
         sample_idx: Index = "all",
         feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
@@ -557,6 +721,8 @@ class MuVI(PyroModule):
 
         Parameters
         ----------
+        group_idx : Index, optional
+            Group index, by default "all"
         view_idx : Index, optional
             View index, by default "all"
         sample_idx : Index, optional
@@ -576,21 +742,28 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
-        obs = self.observations
-        # TODO: too simple
-        if predicted:
-            obs = {
-                vn: self.get_factor_scores() @ loadings
-                for vn, loadings in self.get_factor_loadings().items()
-            }
-        return self._get_view_attr(
-            obs,
-            view_idx,
-            feature_idx,
-            other_idx=sample_idx,
-            other_names=self.sample_names,
-            as_df=as_df,
-        )
+        # TODO: WIP, does not consider nested structures (dict/list of dicts/lists)
+        group_names = _normalize_index(group_idx, self.group_names, as_idx=False)
+
+        obs = {}
+
+        for gn in group_names:
+            obs[gn] = self.observations[gn]
+            if predicted:
+                obs[gn] = {
+                    vn: self.get_factor_scores(gn)[gn] @ loadings
+                    for vn, loadings in self.get_factor_loadings().items()
+                }
+            obs[gn] = self._get_view_attr(
+                obs[gn],
+                view_idx,
+                feature_idx,
+                other_idx=sample_idx,
+                other_names=self.sample_names,
+                as_df=as_df,
+            )
+
+        return obs
 
     def get_prior_masks(
         self,
@@ -709,12 +882,18 @@ class MuVI(PyroModule):
         )
 
     def get_factor_scores(
-        self, sample_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
+        self,
+        group_idx: Index = "all",
+        sample_idx: Index = "all",
+        factor_idx: Index = "all",
+        as_df: bool = False,
     ):
         """Get factor scores.
 
         Parameters
         ----------
+        group_idx : Index, optional
+            Group index, by default "all"
         sample_idx : Index, optional
             Sample index, by default "all"
         factor_idx : Index, optional
@@ -725,13 +904,20 @@ class MuVI(PyroModule):
 
         Returns
         -------
-        Union[np.ndarray, pd.DataFrame]
-            A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_factors`.
+        dict
+            Dictionary with group names as keys,
+            and np.ndarray or pd.DataFrame as values.
         """
         self._raise_untrained_error()
 
-        return self._get_shared_attr(
-            self._guide.get_z() * self._factor_signs.to_numpy(),
+        zs = self._guide.get_z(as_list=True)
+        zs = [
+            zs[g] * self._factor_signs[gn].to_numpy()[:, np.newaxis]
+            for g, gn in enumerate(self.group_names)
+        ]
+        return self._get_group_attr(
+            {gn: zs[g] for g, gn in enumerate(self.group_names)},
+            group_idx,
             sample_idx,
             other_idx=factor_idx,
             other_names=self.factor_names,
@@ -739,12 +925,18 @@ class MuVI(PyroModule):
         )
 
     def get_covariates(
-        self, sample_idx: Index = "all", cov_idx: Index = "all", as_df: bool = False
+        self,
+        group_idx: Index = "all",
+        sample_idx: Index = "all",
+        cov_idx: Index = "all",
+        as_df: bool = False,
     ):
         """Get factor scores.
 
         Parameters
         ----------
+        group_idx : Index, optional
+            Group index, by default "all"
         sample_idx : Index, optional
             Sample index, by default "all"
         cov_idx : Index, optional
@@ -755,11 +947,13 @@ class MuVI(PyroModule):
 
         Returns
         -------
-        Union[np.ndarray, pd.DataFrame]
-            A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_covariates`.
+        dict
+            Dictionary with group names as keys,
+            and np.ndarray or pd.DataFrame as values.
         """
-        return self._get_shared_attr(
+        return self._get_group_attr(
             self.covariates,
+            group_idx,
             sample_idx,
             other_idx=cov_idx,
             other_names=self.covariate_names,
@@ -786,7 +980,7 @@ class MuVI(PyroModule):
                 )
 
             self._model = MuVIModel(
-                self.n_samples,
+                n_samples=[self.n_samples[gn] for gn in self.group_names],
                 n_subsamples=batch_size,
                 n_features=[self.n_features[vn] for vn in self.view_names],
                 n_factors=self.n_factors,
@@ -822,7 +1016,7 @@ class MuVI(PyroModule):
 
         optim = Adam({"lr": learning_rate, "betas": (0.95, 0.999)})
         if optimizer.lower() == "clipped":
-            n_iterations = int(n_epochs * (self.n_samples // batch_size))
+            n_iterations = int(n_epochs * (self.n_all_samples // batch_size))
             logger.info("Decaying learning rate over %s iterations.", n_iterations)
             gamma = 0.1
             lrd = gamma ** (1 / n_iterations)
@@ -855,7 +1049,7 @@ class MuVI(PyroModule):
         """
         scaler = 1.0
         if scale:
-            scaler = 1.0 / self.n_samples
+            scaler = 1.0 / self.n_all_samples
 
         svi = pyro.infer.SVI(
             model=pyro.poutine.scale(self._model, scale=scaler),
@@ -882,7 +1076,14 @@ class MuVI(PyroModule):
             Tuple of (obs, mask, covs, prior_scales)
         """
         train_obs = torch.cat(
-            [torch.Tensor(self.observations[vn]) for vn in self.view_names], 1
+            [
+                torch.cat(
+                    [torch.Tensor(self.observations[gn][vn]) for vn in self.view_names],
+                    1,
+                )
+                for gn in self.group_names
+            ],
+            0,
         )
         mask_obs = ~torch.isnan(train_obs)
         # replace all nans with zeros
@@ -891,7 +1092,9 @@ class MuVI(PyroModule):
 
         train_covs = None
         if self.covariates is not None:
-            train_covs = torch.Tensor(self.covariates)
+            train_covs = torch.cat(
+                [torch.Tensor(self.covariates[gn]) for gn in self.group_names], 0
+            )
 
         train_prior_scales = None
         if self._informed:
@@ -942,8 +1145,8 @@ class MuVI(PyroModule):
         """
 
         # if invalid or out of bounds set to n_samples
-        if batch_size is None or not (0 < batch_size <= self.n_samples):
-            batch_size = self.n_samples
+        if batch_size is None or not (0 < batch_size <= self.n_all_samples):
+            batch_size = self.n_all_samples
 
         if n_particles is None:
             n_particles = max(1, 1000 // batch_size)
@@ -967,7 +1170,7 @@ class MuVI(PyroModule):
         if self._informed:
             train_prior_scales = train_prior_scales.to(self.device)
 
-        if batch_size < self.n_samples:
+        if batch_size < self.n_all_samples:
             logger.info("Using batches of size %s.", batch_size)
             tensors = (train_obs, mask_obs)
             if self.covariates is not None:
@@ -1041,11 +1244,11 @@ class MuVI(PyroModule):
 class MuVIModel(PyroModule):
     def __init__(
         self,
-        n_samples: int,
+        n_samples: List[int],
         n_subsamples: int,
         n_features: List[int],
         n_factors: int,
-        n_covariates: int,
+        n_covariates: List[int],
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
         device: bool = None,
@@ -1054,28 +1257,33 @@ class MuVIModel(PyroModule):
 
         Parameters
         ----------
-        n_samples : int
-            Number of samples
+        n_samples : List[int]
+            Number of samples as list for each group
         n_subsamples : int
             Number of subsamples (batch size)
         n_features : List[int]
             Number of features as list for each view
         n_factors : int
             Number of latent factors
-        n_covariates : int
-            Number of covariates
+        n_covariates : List[int]
+            Number of covariates as list for each group
         likelihoods : List[str], optional
             List of likelihoods for each view,
             either "normal" or "bernoulli", by default None
-        global_prior_scale : float, optional
+        global_prior_scale (unused) : float, optional
             Determine the level of global sparsity, by default 1.0
         """
         super().__init__(name="MuVIModel")
         self.n_samples = n_samples
         self.n_subsamples = n_subsamples
         self.n_features = n_features
+
+        self.sample_offsets = [0] + np.cumsum(self.n_samples).tolist()
         self.feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+
+        self.n_groups = len(self.n_samples)
         self.n_views = len(self.n_features)
+
         self.n_factors = n_factors
         self.n_covariates = n_covariates
         self.likelihoods = likelihoods
@@ -1100,10 +1308,11 @@ class MuVIModel(PyroModule):
             A pyro plate.
         """
         plate_kwargs = {
+            "group": {"name": "group", "size": self.n_groups, "dim": -1},
             "view": {"name": "view", "size": self.n_views, "dim": -1},
             "factor": {"name": "factor", "size": self.n_factors, "dim": -2},
             "feature": {"name": "feature", "size": sum(self.n_features), "dim": -1},
-            "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
+            "sample": {"name": "sample", "size": sum(self.n_samples), "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
         return pyro.plate(device=self.device, **{**plate_kwargs[name], **kwargs})
@@ -1145,17 +1354,28 @@ class MuVIModel(PyroModule):
         output_dict = {}
 
         view_plate = self.get_plate("view")
+        group_plate = self.get_plate("group")
         factor_plate = self.get_plate("factor")
         feature_plate = self.get_plate("feature")
         sample_plate = self.get_plate("sample", subsample=sample_idx)
+
+        with group_plate:
+            output_dict["group_scale"] = pyro.sample(
+                "group_scale", dist.HalfCauchy(self._ones(1))
+            )
+            with factor_plate:
+                output_dict["group_factor_scale"] = pyro.sample(
+                    "group_factor_scale",
+                    dist.HalfCauchy(self._ones(1)),
+                )
 
         with view_plate:
             output_dict["view_scale"] = pyro.sample(
                 "view_scale", dist.HalfCauchy(self._ones(1))
             )
             with factor_plate:
-                output_dict["factor_scale"] = pyro.sample(
-                    "factor_scale",
+                output_dict["view_factor_scale"] = pyro.sample(
+                    "view_factor_scale",
                     dist.HalfCauchy(self._ones(1)),
                 )
 
@@ -1178,7 +1398,7 @@ class MuVIModel(PyroModule):
                                 ...,
                                 self.feature_offsets[m] : self.feature_offsets[m + 1],
                             ]
-                            * output_dict["factor_scale"][..., m : m + 1]
+                            * output_dict["view_factor_scale"][..., m : m + 1]
                             * output_dict["view_scale"][..., m : m + 1]
                         )
                         for m in range(self.n_views)
@@ -1208,9 +1428,30 @@ class MuVIModel(PyroModule):
             )
 
         with sample_plate:
+            lmbda_factor = torch.cat(
+                [
+                    (
+                        self._ones((self.n_factors, sum(self.n_samples)))[
+                            ...,
+                            self.sample_offsets[g] : self.sample_offsets[g + 1],
+                        ]
+                        * output_dict["group_factor_scale"][..., g : g + 1]
+                        * output_dict["group_scale"][..., g : g + 1]
+                    )
+                    for g in range(self.n_groups)
+                ],
+                -1,
+            )
+            if len(lmbda_factor.shape) > 2:
+                lmbda_factor = lmbda_factor.view(
+                    -1, sum(self.n_samples), self.n_factors
+                )
+            else:
+                lmbda_factor = lmbda_factor.T
+            output_dict["lmbda_factor"] = lmbda_factor
             output_dict["z"] = pyro.sample(
                 "z",
-                dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
+                dist.Normal(self._zeros(self.n_factors), lmbda_factor),
             )
 
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
@@ -1299,14 +1540,18 @@ class MuVIGuide(PyroModule):
 
     def setup(self):
         """Setup parameters and sampling sites."""
+        n_samples = sum(self.model.n_samples)
         n_features = sum(self.model.n_features)
+        n_groups = self.model.n_groups
         n_views = self.model.n_views
         n_factors = self.model.n_factors
 
         site_to_shape = {
-            "z": (self.model.n_samples, n_factors),
+            "z": (n_samples, n_factors),
+            "group_scale": n_groups,
+            "group_factor_scale": (n_factors, n_groups),
             "view_scale": n_views,
-            "factor_scale": (n_factors, n_views),
+            "view_factor_scale": (n_factors, n_views),
             "local_scale": (n_factors, n_features),
             "caux": (n_factors, n_features),
             "w": (n_factors, n_features),
@@ -1375,9 +1620,9 @@ class MuVIGuide(PyroModule):
         """Get the view scales."""
         return self._get_map_estimate("view_scale", False)
 
-    def get_factor_scale(self):
+    def get_view_factor_scale(self):
         """Get the factor scales."""
-        return self._get_map_estimate("factor_scale", False).T
+        return self._get_map_estimate("view_factor_scale", False).T
 
     def get_local_scale(self, as_list: bool = False):
         """Get the local scales."""
@@ -1417,14 +1662,24 @@ class MuVIGuide(PyroModule):
         output_dict = {}
 
         view_plate = self.model.get_plate("view")
+        group_plate = self.model.get_plate("group")
         factor_plate = self.model.get_plate("factor")
         feature_plate = self.model.get_plate("feature")
         sample_plate = self.model.get_plate("sample", subsample=sample_idx)
 
+        with group_plate:
+            output_dict["group_scale"] = self._sample_log_normal("group_scale")
+            with factor_plate:
+                output_dict["group_factor_scale"] = self._sample_log_normal(
+                    "group_factor_scale"
+                )
+
         with view_plate:
             output_dict["view_scale"] = self._sample_log_normal("view_scale")
             with factor_plate:
-                output_dict["factor_scale"] = self._sample_log_normal("factor_scale")
+                output_dict["view_factor_scale"] = self._sample_log_normal(
+                    "view_factor_scale"
+                )
 
         with feature_plate:
             with factor_plate:

@@ -42,7 +42,7 @@ class MuVI(PyroModule):
         observations: MultiView,
         prior_masks: MultiView = None,
         covariates: SingleView = None,
-        prior_confidence: float = 0.99,
+        prior_confidence: Union[float, str] = 0.99,
         n_factors: int = None,
         view_names: List[str] = None,
         likelihoods: Union[Dict[str, str], List[str]] = None,
@@ -59,9 +59,9 @@ class MuVI(PyroModule):
             by default None
         covariates : SingleView, optional
             Additional observed covariates, by default None
-        prior_confidence : float, optional
+        prior_confidence : float or string
             Confidence of prior belief from 0 to 1 (exclusive),
-            typical values are between 0.95 and 0.999,
+            typical values are 'low' (0.95), 'med' (0.99) and 'high' (0.999),
             by default 0.99
         n_factors : int, optional
             Number of latent factors,
@@ -181,19 +181,15 @@ class MuVI(PyroModule):
 
                 if sample_names is None:
                     logger.info(
-                        "Storing the index of the view `%s` " "as sample names.",
-                        vn,
+                        f"Storing the index of the view `{vn}` as sample names."
                     )
                     sample_names = view_sample_names
 
                 if any(sample_names != view_sample_names):
                     logger.info(
-                        "Sample names for view `%s` "
-                        "do not match the sample names of view `%s`, "
-                        "sorting names according to view `%s`.",
-                        vn,
-                        self.view_names[0],
-                        self.view_names[0],
+                        f"Sample names for view `{vn}` do not match "
+                        f"the sample names of view `{self.view_names[0]}`, "
+                        f"sorting names according to view `{self.view_names[0]}`."
                     )
                     view_obs = view_obs.loc[sample_names, :]
 
@@ -219,9 +215,7 @@ class MuVI(PyroModule):
                 feature_names[vn] = view_obs.columns.copy()
             if feature_names[vn] is None:
                 logger.info(
-                    "Setting the name of each feature in `%s` to `%s_feature_idx`.",
-                    vn,
-                    vn,
+                    f"Setting the name of each feature in `{vn}` to `{vn}_feature_idx`."
                 )
                 feature_names[vn] = pd.Index(
                     [f"{vn}_feature_{j}" for j in range(n_features[vn])]
@@ -277,6 +271,15 @@ class MuVI(PyroModule):
             )
             confidence = 0.99
 
+        if isinstance(confidence, str):
+            try:
+                confidence = {"low": 0.95, "med": 0.99, "high": 0.999}[
+                    confidence.lower()
+                ]
+            except KeyError as e:
+                logger.error(e)
+                raise
+
         if not (0 < confidence < 1.0):
             raise ValueError(
                 "Invalid prior confidence, "
@@ -296,8 +299,7 @@ class MuVI(PyroModule):
         if n_prior_factors > n_factors:
             logger.warning(
                 "Prior mask informs more factors than the pre-defined `n_factors`. "
-                "Updating `n_factors` to %s.",
-                n_prior_factors,
+                f"Updating `n_factors` to {n_prior_factors}."
             )
             n_factors = n_prior_factors
 
@@ -305,8 +307,8 @@ class MuVI(PyroModule):
         if n_prior_factors < n_factors:
             logger.warning(
                 "Prior mask informs fewer factors than the pre-defined `n_factors`. "
-                "Informing only the first %s factors, the rest remains uninformed.",
-                n_prior_factors,
+                f"Informing only the first {n_prior_factors} factors, "
+                "the rest remains uninformed."
             )
             # extend all prior masks with additional uninformed factors
             n_dense_factors = n_factors - n_prior_factors
@@ -317,9 +319,7 @@ class MuVI(PyroModule):
             # will only execute if a subset of views are being informed
             if vn not in masks:
                 logger.info(
-                    "Mask for view `%s` not found, assuming `%s` to be uninformed.",
-                    vn,
-                    vn,
+                    f"Mask for view `{vn}` not found, assuming `{vn}` to be uninformed."
                 )
                 masks[vn] = np.zeros((n_factors, self.n_features[vn]))
                 continue
@@ -343,26 +343,22 @@ class MuVI(PyroModule):
                 mask_factor_names = view_mask.index.copy()
                 if factor_names is None:
                     logger.info(
-                        "Storing the index of the mask `%s` as factor names.", vn
+                        f"Storing the index of the mask `{vn}` as factor names."
                     )
                     factor_names = mask_factor_names
                 if any(factor_names != mask_factor_names):
                     logger.info(
-                        "Factor names for mask `%s` "
-                        "do not match the factor names of mask `%s`, "
-                        "sorting names according to mask `%s`.",
-                        vn,
-                        informed_views[0],
-                        informed_views[0],
+                        f"Factor names for mask `{vn}` "
+                        f"do not match the factor names of mask `{informed_views[0]}`, "
+                        f"sorting names according to mask `{informed_views[0]}`."
                     )
                     masks[vn] = view_mask.loc[factor_names, :]
 
                 if any(self.feature_names[vn] != view_mask.columns):
                     logger.info(
-                        "Feature names for mask `%s` "
+                        f"Feature names for mask `{vn}` "
                         "do not match the feature names of its corresponding view, "
-                        "sorting names according to the view features.",
-                        vn,
+                        "sorting names according to the view features."
                     )
                     masks[vn] = view_mask.loc[:, self.feature_names[vn]]
 
@@ -406,7 +402,7 @@ class MuVI(PyroModule):
         if isinstance(likelihoods, list):
             likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
-        logger.info("Likelihoods set to %s", likelihoods)
+        logger.info(f"Likelihoods set to `{likelihoods}`")
         return likelihoods
 
     def _setup_covariates(self, covariates):
@@ -823,7 +819,7 @@ class MuVI(PyroModule):
         optim = Adam({"lr": learning_rate, "betas": (0.95, 0.999)})
         if optimizer.lower() == "clipped":
             n_iterations = int(n_epochs * (self.n_samples // batch_size))
-            logger.info("Decaying learning rate over %s iterations.", n_iterations)
+            logger.info(f"Decaying learning rate over {n_iterations} iterations.")
             gamma = 0.1
             lrd = gamma ** (1 / n_iterations)
             optim = ClippedAdam({"lr": learning_rate, "lrd": lrd})
@@ -947,7 +943,7 @@ class MuVI(PyroModule):
 
         if n_particles is None:
             n_particles = max(1, 1000 // batch_size)
-        logger.info("Using %s particles on parallel", n_particles)
+        logger.info(f"Using {n_particles} particles in parallel")
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
@@ -968,7 +964,7 @@ class MuVI(PyroModule):
             train_prior_scales = train_prior_scales.to(self.device)
 
         if batch_size < self.n_samples:
-            logger.info("Using batches of size %s.", batch_size)
+            logger.info(f"Using batches of size `{batch_size}`.")
             tensors = (train_obs, mask_obs)
             if self.covariates is not None:
                 tensors += (train_covs,)
@@ -1006,7 +1002,7 @@ class MuVI(PyroModule):
 
         self.seed = seed
         if seed is not None:
-            logger.info("Setting training seed to %s", seed)
+            logger.info(f"Setting training seed to `{seed}`")
             pyro.set_rng_seed(seed)
         # clean start
         logger.info("Cleaning parameter store")
@@ -1453,9 +1449,9 @@ def save(model, dir_path="."):
     model_path = os.path.join(dir_path, "model.pkl")
     params_path = os.path.join(dir_path, "params.save")
     if os.path.isfile(model_path):
-        logger.warning("`%s` already exists, overwriting.", model_path)
+        logger.warning(f"`{model_path}` already exists, overwriting.")
     if os.path.isfile(params_path):
-        logger.warning("`%s` already exists, overwriting.", params_path)
+        logger.warning(f"`{params_path}` already exists, overwriting.")
     os.makedirs(dir_path, exist_ok=True)
     # if not os.path.isdir(os.path.dirname(dir_path)) and (
     #     os.path.dirname(dir_path) != ""

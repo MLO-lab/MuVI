@@ -138,7 +138,7 @@ def variance_explained(
 
 def factors_overview(
     model,
-    view_idx,
+    view_idx=0,
     one_sided=True,
     alpha=0.1,
     sig_only=False,
@@ -229,8 +229,8 @@ def factors_overview(
 
 def inspect_factor(
     model,
-    view_idx,
     factor_idx,
+    view_idx=0,
     sort=25,
     threshold=0.05,
     show: bool = None,
@@ -243,15 +243,14 @@ def inspect_factor(
 
     if len(view_idx) > 1:
         logger.warning(
-            "Currently supporting only one view, " "showing results for  `%s`.",
-            view_idx,
+            f"Currently supporting only one view, showing results for `{view_idx[0]}`."
         )
     view_idx = view_idx[0]
 
     if len(factor_idx) > 1:
         logger.warning(
-            "Currently supporting only one factor, " "showing results for  `%s`.",
-            factor_idx,
+            "Currently supporting only one factor, "
+            f"showing results for `{factor_idx[0]}`."
         )
     factor_idx = factor_idx[0]
 
@@ -305,7 +304,7 @@ def inspect_factor(
 # source: https://github.com/DTrimarchi10/confusion_matrix
 def confusion_matrix(
     model,
-    view_idx,
+    view_idx=0,
     true_mask=None,
     threshold=0.1,
     group_names=None,
@@ -649,7 +648,7 @@ def clustermap(model, factor_idx="all", **kwargs):
     )
 
 
-def stripplot(model, factor_idx, groupby, **kwargs):
+def stripplot(model, factor_idx, groupby, legend_loc="right margin", **kwargs):
     y = _normalize_index(factor_idx, model.factor_names, as_idx=False)[0]
     data = pd.concat(
         [
@@ -658,9 +657,12 @@ def stripplot(model, factor_idx, groupby, **kwargs):
         ],
         axis=1,
     )
-    return sns.stripplot(
+    g = sns.stripplot(
         x=groupby, y=y, data=data, hue=kwargs.pop("hue", groupby), **kwargs
     )
+    if legend_loc == "right margin":
+        g.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+    return g
 
 
 def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):

@@ -35,17 +35,67 @@ def setup_cache(model, overwrite: bool = False):
     return model._cache
 
 
-# def filter_factors(model, factor_idx=None, min_r2=None, top_r2=None):
-#     pass
-
-
-def filter_factors(model, factor_idx: Index):
+def _filter_factors(model, factor_idx: Index):
     """Filter factors for the current analysis."""
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
     if len(factor_idx) == 0:
         raise ValueError("`factor_idx` is empty.")
     model_cache = setup_cache(model)
     return model_cache.filter_factors(factor_idx)
+
+
+def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
+    """Filter factors based on variance explained.
+
+    Parameters
+    ----------
+    model : MuVI
+        A MuVI model.
+    r2_thresh : Union[int, float], optional
+        Threshold for the (rel) cumulative sum of variance explained,
+        or the number of top factors, sorted by variance explained,
+        by default 0.95
+
+    Returns
+    -------
+    bool
+        True if succesfully filtered factors.
+    """
+    model_cache = setup_cache(model)
+
+    r2_cols = [f"{Cache.METRIC_R2}_{vn}" for vn in model.view_names]
+    r2_df = model_cache.factor_metadata[r2_cols]
+
+    if r2_df.isna().all(None):
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            "Run `muvi.tl.variance_explained` to compute "
+            "the variance explained by each factor first."
+        )
+        return False
+
+    r2_sorted = r2_df.sum(1).sort_values(ascending=False)
+
+    if int(r2_thresh) == 1:
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            f"`r2_thresh` of `{r2_thresh}` is ambiguous, `r2_thresh` must be "
+            "less than 1.0 or an integer greater than 1."
+        )
+        return False
+
+    factor_subset = r2_sorted.index
+    if r2_thresh < 1.0:
+        factor_subset = r2_sorted[
+            r2_sorted.cumsum() / r2_sorted.sum() < r2_thresh
+        ].index
+
+    if r2_thresh > 1.0:
+        factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
+
+    factor_subset = factor_subset.tolist()
+    logger.info(f"Filtering down to {len(factor_subset)} factors.")
+    return _filter_factors(model, factor_subset)
 
 
 def _sigmoid(x):
@@ -263,7 +313,7 @@ def variance_explained(
 
 def test(
     model,
-    view_idx: Union[str, int],
+    view_idx: Union[str, int] = 0,
     factor_idx: Index = "all",
     feature_sets: pd.DataFrame = None,
     sign: str = "all",

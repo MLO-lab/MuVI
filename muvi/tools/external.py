@@ -1,7 +1,9 @@
 import logging
 import os
-import numpy as np
+
 import h5py
+import numpy as np
+
 from muvi.tools.utils import variance_explained
 
 logger = logging.getLogger(__name__)
@@ -10,6 +12,7 @@ logger = logging.getLogger(__name__)
 def save_as_mofa(
     model,
     path,
+    save_metadata=False,
 ):
 
     if not model._trained:
@@ -20,7 +23,7 @@ def save_as_mofa(
     if os.path.isfile(path):
         logger.warning(f"`{path}` already exists, overwriting.")
         os.remove(path)
-        
+
     default_group_name = "group_0"
     r2_view, r2_factor, _ = variance_explained(model)
 
@@ -35,12 +38,13 @@ def save_as_mofa(
         )
 
     # samples_metadata
-    metadata = model._cache.factor_adata.obs
-    if not metadata.empty:
-        f_metadata = f.create_group("samples_metadata/group_0")
-        f_metadata.create_dataset("sample", data=model.sample_names.tolist())
-        for col in metadata.columns:
-            f_metadata.create_dataset(col, data=metadata[col].to_numpy())
+    if save_metadata:
+        metadata = model._cache.factor_adata.obs
+        if not metadata.empty:
+            f_metadata = f.create_group("samples_metadata/group_0")
+            f_metadata.create_dataset("sample", data=model.sample_names.tolist())
+            for col in metadata.columns:
+                f_metadata.create_dataset(col, data=metadata[col].to_numpy())
 
     # views
     f.create_group("views").create_dataset("views", data=model.view_names.tolist())
@@ -106,7 +110,9 @@ def save_as_mofa(
 
     for vn in model.view_names:
         f_W.create_dataset(vn, data=model.get_factor_loadings()[vn])
-    f_Z.create_dataset(default_group_name, data=model.get_factor_scores()[:, r2_order].T)
+    f_Z.create_dataset(
+        default_group_name, data=model.get_factor_scores()[:, r2_order].T
+    )
 
     # intercepts
     f_intercepts = f.create_group("intercepts")

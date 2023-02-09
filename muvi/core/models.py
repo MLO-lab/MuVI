@@ -404,7 +404,7 @@ class MuVI(PyroModule):
         if isinstance(likelihoods, list):
             likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
-        logger.info(f"Likelihoods set to `{likelihoods}`")
+        logger.info(f"Likelihoods set to `{likelihoods}`.")
         return likelihoods
 
     def _setup_covariates(self, covariates):
@@ -944,7 +944,7 @@ class MuVI(PyroModule):
             batch_size = self.n_samples
 
         n_particles = max(1, 1000 // batch_size)
-        logger.info(f"Using {n_particles} particles in parallel")
+        logger.info(f"Using {n_particles} particles in parallel.")
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
@@ -1009,10 +1009,10 @@ class MuVI(PyroModule):
         if seed is None:
             seed = int(time.strftime("%y%m%d%H%M"))
 
-        logger.info(f"Setting training seed to `{seed}`")
+        logger.info(f"Setting training seed to `{seed}`.")
         pyro.set_rng_seed(seed)
         # clean start
-        logger.info("Cleaning parameter store")
+        logger.info("Cleaning parameter store.")
         pyro.enable_validation(True)
         pyro.clear_param_store()
 

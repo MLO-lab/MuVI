@@ -65,13 +65,17 @@ class Cache:
                     columns.append(f"{key}_{sign}_{vn}")
 
         if model.n_factors > 0:
-            self.factor_adata = ad.AnnData(model.get_factor_scores(as_df=True))
+            self.factor_adata = ad.AnnData(
+                model.get_factor_scores(as_df=True), dtype=np.float32
+            )
             self.factor_adata.varm[Cache.META_KEY] = pd.DataFrame(
                 index=self.factor_adata.var_names, columns=columns, dtype=np.float32
             )
 
         if model.n_covariates > 0:
-            self.cov_adata = ad.AnnData(model.get_covariates(as_df=True))
+            self.cov_adata = ad.AnnData(
+                model.get_covariates(as_df=True), dtype=np.float32
+            )
             self.cov_adata.varm[Cache.META_KEY] = pd.DataFrame(
                 index=self.cov_adata.var_names, columns=columns, dtype=np.float32
             )

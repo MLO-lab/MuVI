@@ -1,7 +1,8 @@
 import logging
 import os
 import pickle
-from typing import Callable, Dict, List, Union
+import time
+from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -40,12 +41,12 @@ class MuVI(PyroModule):
     def __init__(
         self,
         observations: MultiView,
-        prior_masks: MultiView = None,
-        covariates: SingleView = None,
+        prior_masks: Optional[MultiView] = None,
+        covariates: Optional[SingleView] = None,
         prior_confidence: Union[float, str] = 0.99,
-        n_factors: int = None,
-        view_names: List[str] = None,
-        likelihoods: Union[Dict[str, str], List[str]] = None,
+        n_factors: Optional[int] = None,
+        view_names: Optional[List[str]] = None,
+        likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
         use_gpu: bool = True,
     ):
         """MuVI module.
@@ -97,6 +98,7 @@ class MuVI(PyroModule):
         self._informed = self.prior_masks is not None
         self._built = False
         self._trained = False
+        self._training_log = {}
         self._cache = None
 
     @property
@@ -901,12 +903,12 @@ class MuVI(PyroModule):
         self,
         batch_size: int = 0,
         n_epochs: int = 1000,
-        n_particles: int = None,
+        n_particles: int = 1,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
-        callbacks: List[Callable] = None,
+        callbacks: Optional[List[Callable]] = None,
         verbose: bool = True,
-        seed: str = None,
+        seed: Optional[int] = None,
     ):
         """Perform inference.
 
@@ -928,7 +930,7 @@ class MuVI(PyroModule):
             List of callbacks during training, by default None
         verbose : bool, optional
             Whether to log progress, by default 1
-        seed : str, optional
+        seed : int, optional
             Training seed, by default None
 
         Returns
@@ -941,17 +943,14 @@ class MuVI(PyroModule):
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
 
-        if n_particles is None:
-            n_particles = max(1, 1000 // batch_size)
+        n_particles = max(1, 1000 // batch_size)
         logger.info(f"Using {n_particles} particles in parallel")
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
-        optimizer = self._setup_optimizer(
-            batch_size, n_epochs, learning_rate, optimizer
-        )
+        opt = self._setup_optimizer(batch_size, n_epochs, learning_rate, optimizer)
         logger.info("Preparing SVI...")
-        svi = self._setup_svi(optimizer, n_particles, scale=True)
+        svi = self._setup_svi(opt, n_particles, scale=True)
         logger.info("Preparing training data...")
         (
             train_obs,
@@ -1000,10 +999,18 @@ class MuVI(PyroModule):
                     None, train_obs, mask_obs, train_covs, train_prior_scales
                 )
 
-        self.seed = seed
         if seed is not None:
-            logger.info(f"Setting training seed to `{seed}`")
-            pyro.set_rng_seed(seed)
+            try:
+                seed = int(seed)
+            except ValueError:
+                logger.warning(f"Could not convert `{seed}` to integer.")
+                seed = None
+
+        if seed is None:
+            seed = int(time.strftime("%y%m%d%H%M"))
+
+        logger.info(f"Setting training seed to `{seed}`")
+        pyro.set_rng_seed(seed)
         # clean start
         logger.info("Cleaning parameter store")
         pyro.enable_validation(True)
@@ -1029,6 +1036,18 @@ class MuVI(PyroModule):
                 if stop_early:
                     break
 
+        self._training_log = {
+            "n_epochs": n_epochs,
+            "batch_size": batch_size,
+            "n_particles": n_particles,
+            "learning_rate": learning_rate,
+            "optimizer": optimizer,
+            "verbose": verbose,
+            "seed": seed,
+            "history": history,
+            "n_iter": len(history),
+            "stop_early": stop_early,
+        }
         # reset cache in case it was initialized by any of the callbacks
         self._cache = None
         return history, stop_early

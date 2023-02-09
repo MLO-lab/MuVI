@@ -1,0 +1,139 @@
+import logging
+import os
+import numpy as np
+import h5py
+from muvi.tools.utils import variance_explained
+
+logger = logging.getLogger(__name__)
+
+
+def save_as_mofa(
+    model,
+    path,
+):
+
+    if not model._trained:
+        raise ValueError(
+            "Cannot save an untrained model, call `fit` first to train a MuVI model."
+        )
+
+    if os.path.isfile(path):
+        logger.warning(f"`{path}` already exists, overwriting.")
+        os.remove(path)
+        
+    default_group_name = "group_0"
+    r2_view, r2_factor, _ = variance_explained(model)
+
+    f = h5py.File(path, "w")
+
+    # data
+    f_data = f.create_group("data")
+
+    for vn in model.view_names:
+        f_data.create_group(vn).create_dataset(
+            default_group_name, data=model.get_observations()[vn]
+        )
+
+    # samples_metadata
+    metadata = model._cache.factor_adata.obs
+    if not metadata.empty:
+        f_metadata = f.create_group("samples_metadata/group_0")
+        f_metadata.create_dataset("sample", data=model.sample_names.tolist())
+        for col in metadata.columns:
+            f_metadata.create_dataset(col, data=metadata[col].to_numpy())
+
+    # views
+    f.create_group("views").create_dataset("views", data=model.view_names.tolist())
+
+    # groups
+    f.create_group("groups").create_dataset("groups", data=[default_group_name])
+
+    # features
+    f_features = f.create_group("features")
+
+    for vn in model.view_names:
+        f_features.create_dataset(vn, data=model.feature_names[vn].tolist())
+
+    # samples
+    f.create_group("samples").create_dataset(
+        default_group_name, data=model.sample_names.tolist()
+    )
+
+    # factors (sorted)
+    r2_order = r2_factor.sum(1).argsort().to_numpy()[::-1]
+    f.create_group("factors").create_dataset(
+        default_group_name, data=model.factor_names[r2_order].tolist()
+    )
+
+    # model_options
+
+    model_options = {
+        "ard_weights": [True],
+        "spikeslab_weights": [True],
+        "ard_factors": [False],
+        "spikeslab_factors": [False],
+        "likelihoods": [
+            {"normal": "gaussian"}.get(model.likelihoods[vn], model.likelihoods[vn])
+            for vn in model.view_names
+        ],
+    }
+
+    f_model_options = f.create_group("model_options")
+    for name, value in model_options.items():
+        f_model_options.create_dataset(name, data=value)
+
+    # training_opts
+    training_opts = [
+        # maxiter
+        model._training_log["n_epochs"],
+        # freqELBO
+        1,
+        # start_elbo
+        1,
+        # gpu_mode
+        int(str(model.device) != "cpu"),
+        # stochastic
+        int(model._training_log["batch_size"] < model.n_samples),
+        # seed
+        model._training_log["seed"],
+    ]
+
+    f.create_dataset("training_opts", data=training_opts)
+
+    # expectations
+    f_W = f.create_group("expectations/W")
+    f_Z = f.create_group("expectations/Z")
+
+    for vn in model.view_names:
+        f_W.create_dataset(vn, data=model.get_factor_loadings()[vn])
+    f_Z.create_dataset(default_group_name, data=model.get_factor_scores()[:, r2_order].T)
+
+    # intercepts
+    f_intercepts = f.create_group("intercepts")
+
+    for vn in model.view_names:
+        f_intercepts.create_group(vn).create_dataset(
+            default_group_name, data=np.zeros(model.n_features[vn])
+        )
+
+    # training stats
+    n_iter = model._training_log["n_iter"]
+    training_stats = {
+        "elbo": model._training_log["history"],
+        "number_factors": model.n_factors * np.ones(n_iter),
+        "time": np.zeros(n_iter),
+    }
+
+    f_training_stats = f.create_group("training_stats")
+    for name, value in training_stats.items():
+        f_training_stats.create_dataset(name, data=value)
+
+    # variance_explained
+    f.create_group("variance_explained/r2_total").create_dataset(
+        default_group_name, data=[r2_view[vn] for vn in model.view_names]
+    )
+    f.create_group("variance_explained/r2_per_factor").create_dataset(
+        default_group_name, data=r2_factor.iloc[r2_order, :].to_numpy().T
+    )
+
+    return f.close()

@@ -50,6 +50,7 @@ class MuVI(PyroModule):
         view_names: List[str] = None,
         likelihoods: Union[Dict[str, str], List[str]] = None,
         use_gpu: bool = True,
+        factor_sparsity : bool = False,
     ):
         """MuVI module.
 
@@ -100,6 +101,8 @@ class MuVI(PyroModule):
             logger.info("GPU available, running all computations on the GPU.")
             self.device = torch.device("cuda")
         self.to(self.device)
+        
+        self.factor_sparsity = factor_sparsity
 
         self._model = None
         self._guide = None
@@ -987,6 +990,7 @@ class MuVI(PyroModule):
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 device=self.device,
+                factor_sparsity=self.factor_sparsity,
             )
             self._guide = MuVIGuide(self._model, device=self.device)
             self._built = True
@@ -1252,6 +1256,7 @@ class MuVIModel(PyroModule):
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
         device: bool = None,
+        factor_sparsity = False,
     ):
         """MuVI generative model.
 
@@ -1293,6 +1298,7 @@ class MuVIModel(PyroModule):
         )
 
         self.device = device
+        self.factor_sparsity = factor_sparsity
 
     def get_plate(self, name: str, **kwargs):
         """Get the sampling plate.
@@ -1322,6 +1328,42 @@ class MuVIModel(PyroModule):
 
     def _ones(self, size):
         return torch.ones(size, device=self.device)
+
+    def _horseshoe(
+        self,
+        dim_offsets,
+        global_scales,
+        factor_scales,
+        local_scales=None,
+        prior_scales=None,
+        caux_name=None,
+    ):
+
+        n_dim = global_scales.shape[-1]
+
+        lmbda = [
+            factor_scales[..., i : i + 1] * global_scales[..., i : i + 1]
+            for i in range(n_dim)
+        ]
+
+        if local_scales is not None:
+            lmbda = [
+                local_scales[..., dim_offsets[i] : dim_offsets[i + 1]] * l
+                for i, l in enumerate(lmbda)
+            ]
+
+        lmbda = torch.cat(lmbda, -1)
+
+        if caux_name is not None:
+            caux = pyro.sample(
+                caux_name,
+                dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
+            )
+            slab_scale = 1.0 if prior_scales is None else prior_scales
+            c = slab_scale * torch.sqrt(caux)
+            lmbda = (c * lmbda) / torch.sqrt(c**2 + lmbda**2)
+
+        return lmbda
 
     def forward(
         self,
@@ -1385,33 +1427,18 @@ class MuVIModel(PyroModule):
                     "local_scale",
                     dist.HalfCauchy(self._ones(1)),
                 )
-                output_dict["caux"] = pyro.sample(
-                    "caux",
-                    dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
-                )
-                slab_scale = 1.0 if prior_scales is None else prior_scales
-                c = slab_scale * torch.sqrt(output_dict["caux"])
-                lmbda = torch.cat(
-                    [
-                        (
-                            output_dict["local_scale"][
-                                ...,
-                                self.feature_offsets[m] : self.feature_offsets[m + 1],
-                            ]
-                            * output_dict["view_factor_scale"][..., m : m + 1]
-                            * output_dict["view_scale"][..., m : m + 1]
-                        )
-                        for m in range(self.n_views)
-                    ],
-                    -1,
-                )
-
                 output_dict["w"] = pyro.sample(
                     "w",
                     dist.Normal(
                         self._zeros(1),
-                        (self.global_prior_scale * c * lmbda)
-                        / torch.sqrt(c**2 + lmbda**2),
+                        self._horseshoe(
+                            self.feature_offsets,
+                            global_scales=output_dict["view_scale"],
+                            factor_scales=output_dict["view_factor_scale"],
+                            local_scales=output_dict["local_scale"],
+                            prior_scales=prior_scales,
+                            caux_name="caux",
+                        ),
                     ),
                 )
 
@@ -1428,31 +1455,31 @@ class MuVIModel(PyroModule):
             )
 
         with sample_plate:
-            lmbda_factor = torch.cat(
-                [
-                    (
-                        self._ones((self.n_factors, sum(self.n_samples)))[
-                            ...,
-                            self.sample_offsets[g] : self.sample_offsets[g + 1],
-                        ]
-                        * output_dict["group_factor_scale"][..., g : g + 1]
-                        * output_dict["group_scale"][..., g : g + 1]
+            if self.factor_sparsity:
+                lmbda_factor = self._horseshoe(
+                    self.sample_offsets,
+                    global_scales=output_dict["group_scale"],
+                    factor_scales=output_dict["group_factor_scale"],
+                    local_scales=self._ones((self.n_factors, sum(self.n_samples))),
+                    prior_scales=None,
+                    caux_name=None,
+                )
+                if len(lmbda_factor.shape) > 2:
+                    lmbda_factor = lmbda_factor.view(
+                        -1, sum(self.n_samples), self.n_factors
                     )
-                    for g in range(self.n_groups)
-                ],
-                -1,
-            )
-            if len(lmbda_factor.shape) > 2:
-                lmbda_factor = lmbda_factor.view(
-                    -1, sum(self.n_samples), self.n_factors
+                else:
+                    lmbda_factor = lmbda_factor.T
+                output_dict["lmbda_factor"] = lmbda_factor
+                output_dict["z"] = pyro.sample(
+                    "z",
+                    dist.Normal(self._zeros(self.n_factors), lmbda_factor),
                 )
             else:
-                lmbda_factor = lmbda_factor.T
-            output_dict["lmbda_factor"] = lmbda_factor
-            output_dict["z"] = pyro.sample(
-                "z",
-                dist.Normal(self._zeros(self.n_factors), lmbda_factor),
-            )
+                output_dict["z"] = pyro.sample(
+                    "z",
+                    dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
+                )
 
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
             if self.n_covariates > 0:
@@ -1615,6 +1642,14 @@ class MuVIGuide(PyroModule):
     def get_sigma(self, as_list: bool = False):
         """Get the marginal feature scales."""
         return self._get_map_estimate("sigma", as_list=as_list)
+    
+    def get_group_scale(self):
+        """Get the view scales."""
+        return self._get_map_estimate("group_scale", False)
+
+    def get_group_factor_scale(self):
+        """Get the factor scales."""
+        return self._get_map_estimate("group_factor_scale", False).T
 
     def get_view_scale(self):
         """Get the view scales."""

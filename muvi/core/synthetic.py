@@ -12,12 +12,11 @@ logger = logging.getLogger(__name__)
 class DataGenerator:
     def __init__(
         self,
-        n_samples: int = 1000,
+        n_samples: List[int] = None,
         n_features: List[int] = None,
         likelihoods: List[str] = None,
-        n_fully_shared_factors: int = 2,
-        n_partially_shared_factors: int = 15,
-        n_private_factors: int = 3,
+        group_factor_config: List[int] = None,
+        view_factor_config: List[int] = None,
         n_covariates: int = 0,
         factor_size_params: Tuple[float] = None,
         factor_size_dist: str = "uniform",
@@ -28,18 +27,21 @@ class DataGenerator:
 
         Parameters
         ----------
-        n_samples : int, optional
-            Number of samples, by default 1000
+        n_samples : List[int], optional
+            Number of samples for each group, by default None
         n_features : List[int], optional
             Number of features for each view, by default None
         likelihoods : List[str], optional
             Likelihoods for each view, 'normal' or 'bernoulli', by default None
-        n_fully_shared_factors : int, optional
-            Number of fully shared latent factors, by default 2
-        n_partially_shared_factors : int, optional
-            Number of partially shared latent factors, by default 15
-        n_private_factors : int, optional
-            Number of private latent factors, by default 3
+        group_factor_config : List[int], optional
+            Factor sparsity config across groups as List of int
+            [fully shared, partially shared, private factors],
+            by default None
+        view_factor_config : List[int], optional
+            Factor sparsity config across views as List of int
+            [fully shared, partially shared, private factors],
+            the sum must match that of `group_factor_config`,
+            by default None
         n_covariates : int, optional
             Number of observed covariates, by default 0
         factor_size_params : Tuple[float], optional
@@ -56,10 +58,26 @@ class DataGenerator:
 
         self.n_samples = n_samples
         self.n_features = n_features
+        self.n_groups = len(self.n_samples)
         self.n_views = len(self.n_features)
-        self.n_fully_shared_factors = n_fully_shared_factors
-        self.n_partially_shared_factors = n_partially_shared_factors
-        self.n_private_factors = n_private_factors
+
+        if group_factor_config is None:
+            group_factor_config = [2, 15, 3]
+        if view_factor_config is None:
+            view_factor_config = [2, 15, 3]
+
+        self.n_factors = sum(group_factor_config)
+        if self.n_factors != sum(view_factor_config):
+            raise ValueError("Group factor config must match view factor config.")
+
+        self.n_group_fully_shared_factors = group_factor_config[0]
+        self.n_group_partially_shared_factors = group_factor_config[1]
+        self.n_group_private_factors = group_factor_config[2]
+
+        self.n_view_fully_shared_factors = view_factor_config[0]
+        self.n_view_partially_shared_factors = view_factor_config[1]
+        self.n_view_private_factors = view_factor_config[2]
+
         self.n_covariates = n_covariates
 
         if factor_size_params is None:
@@ -91,11 +109,11 @@ class DataGenerator:
 
         # set upon data generation
         # covariates
-        self.x = None
+        self.xs = None
         # covariate coefficients
         self.betas = None
         # latent factors
-        self.z = None
+        self.zs = None
         # factor loadings
         self.ws = None
         self.sigmas = None
@@ -107,36 +125,35 @@ class DataGenerator:
         # set when introducing missingness
         self.presence_masks = None
 
-    @property
-    def n_factors(self):
-        return (
-            self.n_fully_shared_factors
-            + self.n_partially_shared_factors
-            + self.n_private_factors
-        )
+    def _to_matrix(self, matrix_list, axis=1):
+        if any([isinstance(x, list) for x in matrix_list]):
+            return np.concatenate([np.concatenate(y, axis=1) for y in matrix_list])
+        return np.concatenate(matrix_list, axis=axis)
 
-    def _to_matrix(self, matrix_list):
-        return np.concatenate(matrix_list, axis=1)
-
-    def _attr_to_matrix(self, attr_name):
+    def _attr_to_matrix(self, attr_name, axis):
         attr = getattr(self, attr_name)
         if attr is not None:
-            attr = self._to_matrix(attr)
+            attr = self._to_matrix(attr, axis=axis)
         return attr
 
     def _mask_to_nan(self):
         nan_masks = []
-        for mask in self.presence_masks:
-            nan_mask = np.array(mask, dtype=np.float32, copy=True)
-            nan_mask[nan_mask == 0] = np.nan
-            nan_masks.append(nan_mask)
+        for group_mask in self.presence_masks:
+            nan_group_masks = []
+            for mask in group_mask:
+                nan_mask = np.array(mask, dtype=np.float32, copy=True)
+                nan_mask[nan_mask == 0] = np.nan
+                nan_group_masks.append(nan_mask)
+            nan_masks.append(nan_group_masks)
         return nan_masks
 
     def _mask_to_bool(self):
         bool_masks = []
-        for mask in self.presence_masks:
-            bool_mask = mask == 1.0
-            bool_masks.append(bool_mask)
+        for group_mask in self.presence_masks:
+            bool_group_masks = []
+            for mask in group_mask:
+                bool_mask = mask == 1.0
+                bool_group_masks.append(bool_mask)
         return bool_masks
 
     @property
@@ -152,86 +169,100 @@ class DataGenerator:
 
         nan_masks = self._mask_to_nan()
 
-        return [self.ys[m] * nan_masks[m] for m in range(self.n_views)]
+        return [
+            [self.ys[g][m] * nan_masks[g][m] for m in range(self.n_views)]
+            for g in range(self.n_groups)
+        ]
 
     @property
     def y(self):
-        return self._attr_to_matrix("ys")
+        return self._attr_to_matrix("ys", axis=1)
 
     @property
     def missing_y(self):
-        return self._attr_to_matrix("missing_ys")
+        return self._attr_to_matrix("missing_ys", axis=1)
+
+    @property
+    def z(self):
+        return self._attr_to_matrix("zs", axis=0)
+    
+    @property
+    def x(self):
+        return self._attr_to_matrix("xs", axis=0)
 
     @property
     def w(self):
-        return self._attr_to_matrix("ws")
+        return self._attr_to_matrix("ws", axis=1)
 
     @property
     def w_mask(self):
-        return self._attr_to_matrix("w_masks")
+        return self._attr_to_matrix("w_masks", axis=1)
 
     @property
     def noisy_w_mask(self):
-        return self._attr_to_matrix("noisy_w_masks")
+        return self._attr_to_matrix("noisy_w_masks", axis=1)
 
-    def _generate_view_factor_mask(self, rng=None, n_comb=None):
-        if n_comb is not None:
-            logger.warning(
-                "n_comb is not None, "
-                "generating all possible binary combinations of %s variables",
-                n_comb,
-            )
-            self.n_fully_shared_factors = 1
-            self.n_private_factors = self.n_views
-            self.n_partially_shared_factors = 2**n_comb - 2 - self.n_private_factors
+    def _generate_factor_mask(
+        self,
+        n_dim,
+        n_fully_shared,
+        n_partially_shared,
+        n_private,
+        rng=None,
+        n_comb=None,
+    ):
+        # DEPRECATED
+        # if n_comb is not None:
+        #     logger.warning(
+        #         "n_comb is not None, "
+        #         "generating all possible binary combinations of %s variables",
+        #         n_comb,
+        #     )
+        #     self.n_fully_shared_factors = 1
+        #     self.n_private_factors = self.n_views
+        #     self.n_partially_shared_factors = 2**n_comb - 2 - self.n_private_factors
 
-            return np.array(
-                [list(i) for i in itertools.product([1, 0], repeat=n_comb)]
-            )[:-1, :].T
+        #     return np.array(
+        #         [list(i) for i in itertools.product([1, 0], repeat=n_comb)]
+        #     )[:-1, :].T
         if rng is None:
             rng = np.random.default_rng()
 
-        view_factor_mask = np.ones([self.n_views, self.n_factors])
+        factor_mask = np.ones([n_dim, self.n_factors])
 
-        for factor_idx in range(self.n_fully_shared_factors, self.n_factors):
+        for factor_idx in range(n_fully_shared, self.n_factors):
             # exclude view subsets for partially shared factors
-            if (
-                factor_idx
-                < self.n_fully_shared_factors + self.n_partially_shared_factors
-            ):
-                if self.n_views > 2:
-                    exclude_view_subset_size = rng.integers(1, self.n_views - 1)
+            if factor_idx < n_fully_shared + n_partially_shared:
+                if n_dim > 2:
+                    exclude_subset_size = rng.integers(1, n_dim - 1)
                 else:
-                    exclude_view_subset_size = 0
+                    exclude_subset_size = 0
 
-                exclude_view_subset = rng.choice(
-                    self.n_views, exclude_view_subset_size, replace=False
-                )
+                exclude_subset = rng.choice(n_dim, exclude_subset_size, replace=False)
             # exclude all but one view for private factors
             else:
-                include_view_idx = rng.integers(self.n_views)
-                exclude_view_subset = [
-                    i for i in range(self.n_views) if i != include_view_idx
-                ]
+                include_idx = rng.integers(n_dim)
+                exclude_subset = [i for i in range(n_dim) if i != include_idx]
 
-            for m in exclude_view_subset:
-                view_factor_mask[m, factor_idx] = 0
+            for j in exclude_subset:
+                factor_mask[j, factor_idx] = 0
 
-        if self.n_private_factors >= self.n_views:
-            view_factor_mask[-self.n_views :, -self.n_views :] = np.eye(self.n_views)
+        if n_private >= n_dim:
+            factor_mask[-n_dim:, -n_dim:] = np.eye(n_dim)
 
-        return view_factor_mask
+        return factor_mask
 
     def normalise(self, with_std=False):
 
-        for m in range(self.n_views):
-            if self.likelihoods[m] == "normal":
-                y = np.array(self.ys[m], dtype=np.float32, copy=True)
-                y -= y.mean(axis=0)
-                if with_std:
-                    y_std = y.std(axis=0)
-                    y = np.divide(y, y_std, out=np.zeros_like(y), where=y_std != 0)
-                self.ys[m] = y
+        for g in range(self.n_groups):
+            for m in range(self.n_views):
+                if self.likelihoods[m] == "normal":
+                    y = np.array(self.ys[g][m], dtype=np.float32, copy=True)
+                    y -= y.mean(axis=0)
+                    if with_std:
+                        y_std = y.std(axis=0)
+                        y = np.divide(y, y_std, out=np.zeros_like(y), where=y_std != 0)
+                    self.ys[g][m] = y
 
     def sigmoid(self, x):
         return 1.0 / (1 + np.exp(-x))
@@ -252,7 +283,23 @@ class DataGenerator:
             )
             return rng
 
-        view_factor_mask = self._generate_view_factor_mask(rng, n_comb)
+        group_factor_mask = self._generate_factor_mask(
+            self.n_groups,
+            self.n_group_fully_shared_factors,
+            self.n_group_partially_shared_factors,
+            self.n_group_private_factors,
+            rng=rng,
+            n_comb=n_comb,
+        )
+
+        view_factor_mask = self._generate_factor_mask(
+            self.n_views,
+            self.n_view_fully_shared_factors,
+            self.n_view_partially_shared_factors,
+            self.n_view_private_factors,
+            rng=rng,
+            n_comb=n_comb,
+        )
 
         n_active_factors = self.n_active_factors
         if n_active_factors <= 1.0:
@@ -267,22 +314,38 @@ class DataGenerator:
             )
         )
 
-        # generate factor scores which lie in the latent space
-        z = rng.standard_normal((self.n_samples, self.n_factors))
-
-        if self.n_covariates > 0:
-            x = rng.standard_normal((self.n_samples, self.n_covariates))
-
-        betas = []
-        ws = []
-        sigmas = []
-        ys = []
-        w_masks = []
-
         for factor_idx in range(self.n_factors):
             if factor_idx not in active_factor_indices:
                 view_factor_mask[:, factor_idx] = 0.0
 
+        xs = []
+        zs = []
+        betas = []
+        ws = []
+        w_masks = []
+        sigmas = []
+
+        tiny_threshold = 0.1
+
+        for g in range(self.n_groups):
+            n_samples = self.n_samples[g]
+            x_shape = (n_samples, self.n_covariates)
+            z_shape = (n_samples, self.n_factors)
+            z = rng.standard_normal(z_shape) * group_factor_mask[g, :]
+            if self.n_covariates > 0:
+                x = rng.standard_normal(x_shape)
+
+            # add some noise to avoid exactly zero values
+            z = np.where(
+                np.abs(z) < tiny_threshold,
+                tiny_threshold + rng.standard_normal(z_shape) / 100,
+                z,
+            )
+
+            zs.append(z)
+            if self.n_covariates > 0:
+                xs.append(x)
+                
         for m in range(self.n_views):
             n_features = self.n_features[m]
             w_shape = (self.n_factors, n_features)
@@ -304,46 +367,52 @@ class DataGenerator:
                     w_mask[factor_idx] = rng.choice(2, n_features, p=[1 - faft, faft])
 
             # set small values to zero
-            tiny_w_threshold = 0.1
-            w_mask[np.abs(w) < tiny_w_threshold] = 0.0
+            w_mask[np.abs(w) < tiny_threshold] = 0.0
             w = w_mask * w
             # add some noise to avoid exactly zero values
             w = np.where(
-                np.abs(w) < tiny_w_threshold, w + rng.standard_normal(w_shape) / 100, w
+                np.abs(w) < tiny_threshold, w + rng.standard_normal(w_shape) / 100, w
             )
-            assert ((np.abs(w) > tiny_w_threshold) * 1.0 == w_mask).all()
-
-            y_loc = np.matmul(z, w)
+            assert ((np.abs(w) > tiny_threshold) * 1.0 == w_mask).all()
 
             if self.n_covariates > 0:
                 beta_shape = (self.n_covariates, n_features)
                 # reduce effect of betas by scaling them down
                 beta = rng.standard_normal(beta_shape) / 10
-                y_loc = y_loc + np.matmul(x, beta)
                 betas.append(beta)
 
             # generate feature sigmas
             sigma = 1.0 / np.sqrt(rng.gamma(10.0, 1.0, n_features))
 
-            if self.likelihoods[m] == "normal":
-                y = rng.normal(loc=y_loc, scale=sigma)
-            else:
-                y = rng.binomial(1, self.sigmoid(y_loc))
-
             ws.append(w)
             sigmas.append(sigma)
-            ys.append(y)
             w_masks.append(w_mask)
 
+        ys = []
+        for g in range(self.n_groups):
+            group_ys = []
+            for m in range(self.n_views):
+                y_loc = np.matmul(zs[g], ws[m])
+                if self.n_covariates > 0:
+                    y_loc = y_loc + np.matmul(xs[g], betas[m])
+                if self.likelihoods[m] == "normal":
+                    y = rng.normal(loc=y_loc, scale=sigmas[m])
+                else:
+                    y = rng.binomial(1, self.sigmoid(y_loc))
+                group_ys.append(y)
+            ys.append(group_ys)
+
         if self.n_covariates > 0:
-            self.x = x
+            self.xs = xs
             self.betas = betas
-        self.z = z
+
+        self.zs = zs
         self.ws = ws
         self.w_masks = w_masks
         self.sigmas = sigmas
         self.ys = ys
         self.active_factor_indices = active_factor_indices
+        self.group_factor_mask = group_factor_mask
         self.view_factor_mask = view_factor_mask
 
         return rng
@@ -435,46 +504,52 @@ class DataGenerator:
         n_partial_samples = int(n_partial_samples)
         n_partial_features = int(n_partial_features)
 
-        sample_view_mask = np.ones((self.n_samples, self.n_views))
-        missing_sample_indices = rng.choice(
-            self.n_samples, n_partial_samples, replace=False
-        )
-
-        # partially missing samples
-        for ms_idx in missing_sample_indices:
-            if self.n_views > 1:
-                exclude_view_subset_size = rng.integers(1, self.n_views)
-            else:
-                exclude_view_subset_size = 0
-            exclude_view_subset = rng.choice(
-                self.n_views, exclude_view_subset_size, replace=False
-            )
-            sample_view_mask[ms_idx, exclude_view_subset] = 0
-
-        mask = np.repeat(sample_view_mask, self.n_features, axis=1)
-
-        # partially missing features
-        missing_feature_indices = rng.choice(
-            sum(self.n_features), n_partial_features, replace=False
-        )
-
-        for mf_idx in missing_feature_indices:
-            random_sample_indices = rng.choice(
-                self.n_samples,
-                int(self.n_samples * missing_fraction_partial_features),
-                replace=False,
-            )
-            mask[random_sample_indices, mf_idx] = 0
-
-        # remove random fraction
-        mask *= rng.choice([0, 1], mask.shape, p=[random_fraction, 1 - random_fraction])
-
-        view_feature_offsets = [0] + np.cumsum(self.n_features).tolist()
         masks = []
-        for offset_idx in range(len(view_feature_offsets) - 1):
-            start_offset = view_feature_offsets[offset_idx]
-            end_offset = view_feature_offsets[offset_idx + 1]
-            masks.append(mask[:, start_offset:end_offset])
+        for g in range(self.n_groups):
+
+            sample_view_mask = np.ones((self.n_samples[g], self.n_views))
+            missing_sample_indices = rng.choice(
+                self.n_samples[g], n_partial_samples, replace=False
+            )
+
+            # partially missing samples
+            for ms_idx in missing_sample_indices:
+                if self.n_views > 1:
+                    exclude_view_subset_size = rng.integers(1, self.n_views)
+                else:
+                    exclude_view_subset_size = 0
+                exclude_view_subset = rng.choice(
+                    self.n_views, exclude_view_subset_size, replace=False
+                )
+                sample_view_mask[ms_idx, exclude_view_subset] = 0
+
+            mask = np.repeat(sample_view_mask, self.n_features, axis=1)
+
+            # partially missing features
+            missing_feature_indices = rng.choice(
+                sum(self.n_features), n_partial_features, replace=False
+            )
+
+            for mf_idx in missing_feature_indices:
+                random_sample_indices = rng.choice(
+                    self.n_samples[g],
+                    int(self.n_samples[g] * missing_fraction_partial_features),
+                    replace=False,
+                )
+                mask[random_sample_indices, mf_idx] = 0
+
+            # remove random fraction
+            mask *= rng.choice(
+                [0, 1], mask.shape, p=[random_fraction, 1 - random_fraction]
+            )
+
+            view_feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+            group_masks = []
+            for offset_idx in range(len(view_feature_offsets) - 1):
+                start_offset = view_feature_offsets[offset_idx]
+                end_offset = view_feature_offsets[offset_idx + 1]
+                group_masks.append(mask[:, start_offset:end_offset])
+            masks.append(group_masks)
 
         self.presence_masks = masks
 

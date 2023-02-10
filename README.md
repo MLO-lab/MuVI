@@ -21,8 +21,4 @@ source activate muvi
 cd MuVI
 poetry install
 ```
-5. Install extras with poetry (optional):
-```bash
-poetry install -E dev
-```
-6. Check out [basic tutorial](examples/basic_tutorial.ipynb) to get familiar with MuVI!
+5. Check out [basic tutorial](examples/basic_tutorial.ipynb) to get familiar with MuVI!

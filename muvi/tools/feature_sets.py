@@ -57,7 +57,7 @@ class Pathways(GeneSets):
         """
         if verbose < 0:
             raise ValueError(
-                "Invalid verbosity level of %s, please use 0, 1 or 2." % verbose
+                f"Invalid verbosity level of `{verbose}`, please use 0, 1 or 2."
             )
 
         info = str(self) + "\n"
@@ -210,12 +210,9 @@ class Pathways(GeneSets):
                 continue
             if gene_set.name in keep:
                 logger.info(
-                    "Keeping a %s out of %s genes (%.2f) "
-                    "from the special gene set '%s'.",
-                    available_genes,
-                    len(gene_set.genes),
-                    gene_fraction,
-                    gene_set.name,
+                    f"Keeping {available_genes} out of "
+                    f"{len(gene_set.genes)} genes {gene_fraction:.2f} "
+                    f"from the special gene set `{gene_set.name}`.",
                 )
             if gene_set.name in keep or (
                 gene_fraction >= fraction_available
@@ -283,8 +280,8 @@ class Pathways(GeneSets):
 
             if new_gene_set_name in new_gene_set_names:
                 logger.warning(
-                    "%s already existing in the new names, adding a suffix.",
-                    new_gene_set_name,
+                    f"`{new_gene_set_name}` already existing "
+                    "in the new names, adding a suffix."
                 )
                 for i in range(10):
                     new_gene_set_name = (
@@ -336,11 +333,9 @@ def load_pathways(
 
     for i, c in enumerate(collections):
         logger.info(
-            "Loading collection %s with at least %2.1f%% "
-            "of genes available and at least %s genes",
-            c,
-            fraction_available[i] * 100,
-            min_gene_count[i],
+            f"Loading collection `{c}` with at least "
+            f"{(fraction_available[i] * 100):2.1f}%% "
+            "of genes available and at least {min_gene_count[i]} genes."
         )
 
         gene_sets = msigdb.load(c, id_type="symbols").gene_sets
@@ -370,10 +365,9 @@ def load_pathways(
         all_gene_sets += gene_sets
 
         logger.info(
-            "Loaded %s pathways from collection %s with median size of %s genes",
-            len(gene_sets),
-            c,
-            np.median([len(gs.genes) for gs in gene_sets]),
+            f"Loaded {len(gene_sets)} pathways from collection `{c}` "
+            "with median size of "
+            f"{np.median([len(gs.genes) for gs in gene_sets])} genes",
         )
 
     pathways = Pathways(gene_sets=all_gene_sets)
@@ -382,12 +376,11 @@ def load_pathways(
         remove += name[1:]
 
     if len(remove) > 0:
-        logger.info("Removing following redundant pathways:\n%s", ", ".join(remove))
+        logger.info(f"Removing following redundant pathways:\n{', '.join(remove)}")
 
     pathways = pathways.remove(remove)
     logger.info(
-        "Loaded in total %s pathways with median size of %s genes",
-        len(pathways),
-        np.median([len(gs.genes) for gs in pathways.gene_sets]),
+        f"Loaded in total {len(pathways)} pathways with median size of "
+        f"{np.median([len(gs.genes) for gs in pathways.gene_sets])} genes",
     )
     return pathways, size_dfs

@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class Cache:
-
     FILTERED_KEY = "filtered_scores"
     META_KEY = "metadata"
 

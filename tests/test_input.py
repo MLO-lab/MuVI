@@ -53,7 +53,6 @@ def test_pandas_input(pandas_input):
 
 
 def test_pandas_input_shuffled_samples(pandas_input):
-
     observations = pandas_input["observations"]
     sample_names = observations[0].index.tolist()
     np.random.shuffle(sample_names)
@@ -73,7 +72,6 @@ def test_pandas_input_shuffled_samples(pandas_input):
 
 
 def test_pandas_input_missing_samples(pandas_input):
-
     bad_observations = [obs.copy() for obs in pandas_input["observations"]]
     sample_names = bad_observations[0].index.tolist()[:-1]
     bad_observations[1] = bad_observations[1].loc[sample_names, :]
@@ -112,7 +110,6 @@ def test_pandas_input_missing_samples(pandas_input):
 
 
 def test_pandas_input_missing_features(pandas_input):
-
     with pytest.raises(
         ValueError, match="each mask must match the number of features of its view."
     ):

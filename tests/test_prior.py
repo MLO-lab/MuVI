@@ -15,7 +15,6 @@ def test_fewer_n_factors(pandas_input):
 
 
 def test_more_n_factors(pandas_input):
-
     n_dense = 2
 
     model = MuVI(

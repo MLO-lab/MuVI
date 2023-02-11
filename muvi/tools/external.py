@@ -14,7 +14,6 @@ def save_as_mofa(
     path,
     save_metadata=False,
 ):
-
     if not model._trained:
         raise ValueError(
             "Cannot save an untrained model, call `fit` first to train a MuVI model."

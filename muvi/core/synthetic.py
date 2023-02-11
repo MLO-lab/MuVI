@@ -177,9 +177,8 @@ class DataGenerator:
     def _generate_view_factor_mask(self, rng=None, n_comb=None):
         if n_comb is not None:
             logger.warning(
-                "n_comb is not None, "
-                "generating all possible binary combinations of %s variables",
-                n_comb,
+                "n_comb is not None, generating all possible "
+                f"binary combinations of {n_comb} variables"
             )
             self.n_fully_shared_factors = 1
             self.n_private_factors = self.n_views
@@ -223,7 +222,6 @@ class DataGenerator:
         return view_factor_mask
 
     def normalise(self, with_std=False):
-
         for m in range(self.n_views):
             if self.likelihoods[m] == "normal":
                 y = np.array(self.ys[m], dtype=np.float32, copy=True)
@@ -239,7 +237,6 @@ class DataGenerator:
     def generate(
         self, seed: int = None, n_comb: int = None, overwrite: bool = False
     ) -> None:
-
         rng = np.random.default_rng()
 
         if seed is not None:
@@ -377,16 +374,13 @@ class DataGenerator:
                     noisy_w_mask.mean(axis=1).sum() / self.view_factor_mask[0].sum()
                 )
                 for factor_idx in range(self.n_factors):
-
                     active_cell_indices = noisy_w_mask[factor_idx, :].nonzero()[0]
                     # if all features turned off
                     # => simulate random noise in terms of false positives only
                     if len(active_cell_indices) == 0:
                         logger.warning(
-                            "Factor %s is completely off, "
-                            "inserting %.2f%% false positives.",
-                            factor_idx,
-                            (100 * fraction_active_cells),
+                            f"Factor {factor_idx} is completely off, inserting "
+                            f"{(100 * fraction_active_cells):.2f}%% false positives.",
                         )
                         active_cell_indices = rng.choice(
                             self.n_features[m],
@@ -412,7 +406,6 @@ class DataGenerator:
                         noisy_w_mask[factor_idx, inactive_cell_indices[off_idx]] = 1.0
 
             else:
-
                 noisy_w_mask.fill(0.0)
 
         self.noisy_w_masks = noisy_w_masks
@@ -426,7 +419,6 @@ class DataGenerator:
         missing_fraction_partial_features: float = 0.0,
         seed=None,
     ):
-
         rng = np.random.default_rng()
 
         if seed is not None:

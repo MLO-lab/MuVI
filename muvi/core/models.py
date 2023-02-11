@@ -37,6 +37,10 @@ class TensorDataset(Dataset):
         return index, tuple(tensor[index] for tensor in self.tensors)
 
 
+def _sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
 class MuVI(PyroModule):
     def __init__(
         self,
@@ -158,7 +162,6 @@ class MuVI(PyroModule):
         return observations
 
     def _setup_samples(self, observations):
-
         n_samples = 0
         sample_names = None
 
@@ -205,7 +208,6 @@ class MuVI(PyroModule):
         return observations
 
     def _setup_features(self, observations):
-
         n_features = {vn: 0 for vn in self.view_names}
         feature_names = {vn: None for vn in self.view_names}
 
@@ -398,7 +400,6 @@ class MuVI(PyroModule):
         return prior_masks, prior_scales
 
     def _setup_likelihoods(self, likelihoods):
-
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
         if isinstance(likelihoods, list):
@@ -408,7 +409,6 @@ class MuVI(PyroModule):
         return likelihoods
 
     def _setup_covariates(self, covariates):
-
         n_covariates = 0
         if covariates is not None:
             n_covariates = covariates.shape[1]
@@ -549,7 +549,6 @@ class MuVI(PyroModule):
         sample_idx: Index = "all",
         feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
         as_df: bool = False,
-        predicted: bool = False,
     ):
         """Get observations.
 
@@ -564,9 +563,6 @@ class MuVI(PyroModule):
         as_df : bool, optional
             Whether to return a pandas dataframe,
             by default False
-        predicted : bool, optional
-            Whether to return a the predicted observations,
-            i.e. Z @ W, by default False
 
         Returns
         -------
@@ -574,21 +570,123 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
-        obs = self.observations
-        # TODO: too simple
-        if predicted:
-            obs = {
-                vn: self.get_factor_scores() @ loadings
-                for vn, loadings in self.get_factor_loadings().items()
-            }
         return self._get_view_attr(
-            obs,
+            self.observations,
             view_idx,
             feature_idx,
             other_idx=sample_idx,
             other_names=self.sample_names,
             as_df=as_df,
         )
+
+    def get_predicted(
+        self,
+        view_idx: Index = "all",
+        sample_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        factor_idx: Index = "all",
+        cov_idx: Index = "all",
+        as_df: bool = False,
+    ):
+        """Get predicted observations.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        sample_idx : Index, optional
+            Sample index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        factor_idx : Index, optional
+            Factor index, by default "all"
+        cov_idx : Index, optional
+            Covariate index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+        obs_hat = {
+            vn: np.zeros((self.n_samples, self.n_features[vn]))
+            for vn in _normalize_index(view_idx, self.view_names, as_idx=False)
+        }
+        if factor_idx is not None:
+            factor_scores = self.get_factor_scores(sample_idx, factor_idx)
+            factor_loadings = self.get_factor_loadings(
+                view_idx, factor_idx, feature_idx
+            )
+            obs_hat = {
+                vn: obs + (factor_scores @ factor_loadings[vn])
+                for vn, obs in obs_hat.items()
+            }
+
+        if cov_idx is not None:
+            covariates = self.get_covariates(sample_idx, cov_idx)
+            cov_coefficients = self.get_covariate_coefficients(
+                view_idx, cov_idx, feature_idx
+            )
+            obs_hat = {
+                vn: obs + (covariates @ cov_coefficients[vn])
+                for vn, obs in obs_hat.items()
+            }
+
+        for vn in obs_hat.keys():
+            if self.likelihoods[vn] == "bernoulli":
+                obs_hat[vn] = np.rint(_sigmoid(obs_hat[vn]))
+
+        if as_df:
+            obs_hat = {
+                vn: pd.DataFrame(
+                    obs, index=self.sample_names, columns=self.feature_names[vn]
+                )
+                for vn, obs in obs_hat.items()
+            }
+
+        return obs_hat
+
+    def get_imputed(
+        self,
+        view_idx: Index = "all",
+        sample_idx: Index = "all",
+        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        as_df: bool = False,
+    ):
+        """Get imputed observations.
+
+        Parameters
+        ----------
+        view_idx : Index, optional
+            View index, by default "all"
+        sample_idx : Index, optional
+            Sample index, by default "all"
+        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+            Feature index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        dict
+            Dictionary with view names as keys,
+            and np.ndarray or pd.DataFrame as values.
+        """
+
+        obs = self.get_observations(view_idx, sample_idx, feature_idx, as_df=True)
+        obs_hat = self.get_predicted(view_idx, sample_idx, feature_idx, as_df=True)
+        obs_imputed = {vn: obs[vn].fillna(obs_hat[vn]) for vn in obs.keys()}
+
+        if not as_df:
+            obs_imputed = {
+                vn: obs_imp.to_numpy() for vn, obs_imp in obs_imputed.items()
+            }
+        return obs_imputed
 
     def get_prior_masks(
         self,
@@ -903,7 +1001,7 @@ class MuVI(PyroModule):
         self,
         batch_size: int = 0,
         n_epochs: int = 1000,
-        n_particles: int = 1,
+        n_particles: int = 0,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
         callbacks: Optional[List[Callable]] = None,
@@ -921,7 +1019,7 @@ class MuVI(PyroModule):
             by default 1000
         n_particles : int, optional
             Number of particles/samples used to form the ELBO (gradient) estimators,
-            by default 1000 // batch_size
+            by default 0 (1000 // batch_size)
         learning_rate : float, optional
             Learning rate, by default 0.005
         optimizer : str, optional
@@ -943,7 +1041,8 @@ class MuVI(PyroModule):
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
 
-        n_particles = max(1, 1000 // batch_size)
+        if n_particles < 1:
+            n_particles = max(1, 1000 // batch_size)
         logger.info(f"Using {n_particles} particles in parallel.")
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)

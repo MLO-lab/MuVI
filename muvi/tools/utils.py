@@ -98,10 +98,6 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
     return _filter_factors(model, factor_subset)
 
 
-def _sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
 def _recon_error(
     model,
     view_idx,
@@ -130,7 +126,8 @@ def _recon_error(
     sample_idx = "all"
     if subsample is not None and subsample > 0 and subsample < model.n_samples:
         logger.info(
-            "Estimating %s with a random sample of %s samples.", metric_label, subsample
+            f"Estimating `{metric_label}` with a random sample of "
+            f"{subsample} samples."
         )
         sample_idx = np.random.choice(model.n_samples, subsample, replace=False)
 
@@ -142,68 +139,50 @@ def _recon_error(
 
     model_cache = setup_cache(model)
 
-    # results not in cache, carry on computing
     n_samples = list(ys.values())[0].shape[0]
     if subsample is None and n_samples > 10000 and (factor_wise or cov_wise):
         logger.warning(
-            "Computing %s with more %s samples, this may take some time. "
-            "Consider estimating %s by setting `subsample` to a smaller number.",
-            metric_label,
-            n_samples,
-            metric_label,
+            f"Computing `{metric_label}` with `{n_samples}` samples, "
+            "this may take some time. "
+            f"Consider estimating `{metric_label}` by setting `subsample` "
+            "to a smaller number."
         )
 
-    n_factors = 0
-    n_covariates = 0
-    factor_names = []
-    cov_names = []
-    if valid_factor_idx:
-        z = model.get_factor_scores(
-            sample_idx=sample_idx, factor_idx=factor_idx, as_df=True
-        )
-        ws = model.get_factor_loadings(view_idx, factor_idx)
-        factor_names = z.columns
-        n_factors = len(factor_names)
-        z = z.to_numpy()
-    if valid_cov_idx:
-        x = model.get_covariates(sample_idx=sample_idx, cov_idx=cov_idx, as_df=True)
-        betas = model.get_covariate_coefficients(view_idx, cov_idx)
-        cov_names = x.columns
-        n_covariates = len(cov_names)
-        x = x.to_numpy()
+    factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
+    cov_idx = _normalize_index(cov_idx, model.covariate_names, as_idx=False)
+
+    n_factors = len(factor_idx)
+    n_covariates = len(cov_idx)
 
     view_scores = {}
     factor_scores = {}
     cov_scores = {}
 
-    for m, vn in enumerate(view_names):
+    for m, vn in tqdm(enumerate(view_names)):
         score_key = cache_columns[m]
-        view_scores[vn] = 0.0
-        factor_scores[score_key] = np.zeros(n_factors)
-        cov_scores[score_key] = np.zeros(n_covariates)
         y_true_view = ys[vn]
         y_true_view = np.nan_to_num(y_true_view, nan=0.0)
-        y_pred_view = np.zeros_like(y_true_view)
-        if valid_factor_idx:
-            y_pred_view += z @ ws[vn]
-            if model.likelihoods[vn] == "bernoulli":
-                y_pred_view = _sigmoid(y_pred_view)
-        if valid_cov_idx:
-            y_pred_view += x @ betas[vn]
+        y_pred_view = model.get_predicted(
+            vn, sample_idx, feature_idx="all", factor_idx=factor_idx, cov_idx=cov_idx
+        )[vn]
         view_scores[vn] = metric_fn(y_true_view, y_pred_view)
+        factor_scores[score_key] = np.zeros(n_factors)
+        cov_scores[score_key] = np.zeros(n_covariates)
         if factor_wise:
             for k in range(n_factors):
-                y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
-                if model.likelihoods[vn] == "bernoulli":
-                    y_pred_fac_k = _sigmoid(y_pred_fac_k)
+                y_pred_fac_k = model.get_predicted(
+                    vn, sample_idx, feature_idx="all", factor_idx=k, cov_idx=None
+                )[vn]
                 factor_scores[score_key][k] = metric_fn(y_true_view, y_pred_fac_k)
         if cov_wise:
             for k in range(n_covariates):
-                y_pred_cov_k = np.outer(x[:, k], betas[vn][k, :])
+                y_pred_cov_k = model.get_predicted(
+                    vn, sample_idx, feature_idx="all", factor_idx=None, cov_idx=k
+                )[vn]
                 cov_scores[score_key][k] = metric_fn(y_true_view, y_pred_cov_k)
 
-    factor_scores = pd.DataFrame(factor_scores, index=factor_names)
-    cov_scores = pd.DataFrame(cov_scores, index=cov_names)
+    factor_scores = pd.DataFrame(factor_scores, index=factor_idx)
+    cov_scores = pd.DataFrame(cov_scores, index=cov_idx)
     if cache:
         model_cache.update_uns(view_scores_key, view_scores)
         model_cache.update_factor_metadata(factor_scores)
@@ -566,7 +545,6 @@ def dendrogram(model, groupby, **kwargs):
 
 
 def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
-
     view_names = sorted(mdata.mod.keys())
     observations = {
         view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names

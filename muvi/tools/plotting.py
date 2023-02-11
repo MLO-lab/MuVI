@@ -423,7 +423,6 @@ def factor_activity(
     ylim=None,
     **kwargs,
 ):
-
     true_w_col = true_w[factor_idx, :]
     w_col = approx_w[factor_idx, :]
     true_mask_col = true_mask[factor_idx, :]
@@ -485,6 +484,7 @@ def factor_activity(
 
 # scanpy plotting..
 
+
 # plot latent embeddings
 def _embed(model, color, pl_fn, **kwargs):
     return pl_fn(_get_model_cache(model).factor_adata, color=color, **kwargs)
@@ -506,7 +506,6 @@ def umap(model, color, **kwargs):
 
 # plot groups of observations against (subset of) factors
 def group(model, factor_idx, groupby, pl_type=HEATMAP, **kwargs):
-
     pl_type = pl_type.lower().strip()
 
     if (pl_type in MATRIXPLOT or pl_type in DOTPLOT) and "colorbar_title" not in kwargs:
@@ -538,7 +537,6 @@ def group(model, factor_idx, groupby, pl_type=HEATMAP, **kwargs):
 
 # plot ranked factors against groups of observations
 def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
-
     factor_adata = _get_model_cache(model).factor_adata
     if "rank_genes_groups" not in factor_adata.uns:
         raise ValueError("No group-wise ranking found, run `muvi.tl.rank first.`")
@@ -547,7 +545,7 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
     dendrogram_key = "dendrogram_" + groupby
     if dendrogram_key not in factor_adata.uns:
         logger.warning(
-            "dendrogram data not found (using key=%s). "
+            f"dendrogram data not found (using `{dendrogram_key}` as key). "
             "Running `muvi.tl.dendrogram` with default parameters. "
             "For fine tuning "
             "it is recommended to run `muvi.tl.dendrogram` independently."

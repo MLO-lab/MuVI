@@ -8,7 +8,7 @@ import pandas as pd
 import scanpy as sc
 import scipy
 from scipy.optimize import linprog
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score
 from statsmodels.stats import multitest
 from tqdm import tqdm
 
@@ -98,6 +98,10 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
     return _filter_factors(model, factor_subset)
 
 
+def _sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
 def _recon_error(
     model,
     view_idx,
@@ -111,17 +115,29 @@ def _recon_error(
     metric_fn,
 ):
     if view_idx is None:
-        raise ValueError(f"Invalid view index: {view_idx}")
+        raise ValueError(f"Invalid view index: `{view_idx}`.")
 
-    valid_factor_idx = factor_idx is not None and model.n_factors > 0
-    valid_cov_idx = cov_idx is not None and model.n_covariates > 0
-    if not valid_factor_idx and not valid_cov_idx:
+    try:
+        factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
+    except IndexError:
+        if factor_idx is not None and model.n_factors > 0:
+            logger.warning(f"Invalid factor index: `{factor_idx}`.")
+        factor_idx = None
+
+    try:
+        cov_idx = _normalize_index(cov_idx, model.covariate_names, as_idx=False)
+    except IndexError:
+        if cov_idx is not None and model.n_covariates > 0:
+            logger.warning(f"Invalid covariance index: `{cov_idx}`.")
+        cov_idx = None
+
+    if factor_idx is None and cov_idx is None:
         raise ValueError(
-            "Both `factor_idx` and `cov_idx` are None, at least one is required."
+            "Both `factor_idx` and `cov_idx` are invalid, at least one is required."
         )
 
-    factor_wise &= valid_factor_idx
-    cov_wise &= valid_cov_idx
+    factor_wise &= factor_idx is not None
+    cov_wise &= cov_idx is not None
 
     sample_idx = "all"
     if subsample is not None and subsample > 0 and subsample < model.n_samples:
@@ -148,41 +164,57 @@ def _recon_error(
             "to a smaller number."
         )
 
-    factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
-    cov_idx = _normalize_index(cov_idx, model.covariate_names, as_idx=False)
-
-    n_factors = len(factor_idx)
-    n_covariates = len(cov_idx)
+    n_factors = 0
+    if factor_idx is not None:
+        z = model.get_factor_scores(sample_idx=sample_idx, factor_idx=factor_idx)
+        ws = model.get_factor_loadings(view_idx, factor_idx)
+        n_factors = len(factor_idx)
+    n_covariates = 0
+    if cov_idx is not None:
+        x = model.get_covariates(sample_idx=sample_idx, cov_idx=cov_idx)
+        betas = model.get_covariate_coefficients(view_idx, cov_idx)
+        n_covariates = len(cov_idx)
 
     view_scores = {}
     factor_scores = {}
     cov_scores = {}
 
-    for m, vn in tqdm(enumerate(view_names)):
+    for m, vn in enumerate(view_names):
         score_key = cache_columns[m]
         y_true_view = ys[vn]
-        y_true_view = np.nan_to_num(y_true_view, nan=0.0)
-        y_pred_view = model.get_predicted(
-            vn, sample_idx, feature_idx="all", factor_idx=factor_idx, cov_idx=cov_idx
-        )[vn]
+        mask = np.isnan(y_true_view)
+        y_true_view[mask] = 0.0
+        y_pred_view = np.zeros_like(y_true_view)
+        if n_factors > 0:
+            y_pred_view += z @ ws[vn]
+            if model.likelihoods[vn] == "bernoulli":
+                y_pred_view = _sigmoid(y_pred_view)
+        if n_covariates > 0:
+            y_pred_view += x @ betas[vn]
+        y_pred_view[mask] = 0.0
         view_scores[vn] = metric_fn(y_true_view, y_pred_view)
+
         factor_scores[score_key] = np.zeros(n_factors)
         cov_scores[score_key] = np.zeros(n_covariates)
         if factor_wise:
-            for k in range(n_factors):
-                y_pred_fac_k = model.get_predicted(
-                    vn, sample_idx, feature_idx="all", factor_idx=k, cov_idx=None
-                )[vn]
+            for k in tqdm(range(n_factors)):
+                y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
+                if model.likelihoods[vn] == "bernoulli":
+                    y_pred_fac_k = _sigmoid(y_pred_fac_k)
+                y_pred_fac_k[mask] = 0.0
                 factor_scores[score_key][k] = metric_fn(y_true_view, y_pred_fac_k)
         if cov_wise:
             for k in range(n_covariates):
-                y_pred_cov_k = model.get_predicted(
-                    vn, sample_idx, feature_idx="all", factor_idx=None, cov_idx=k
-                )[vn]
+                y_pred_cov_k = np.outer(x[:, k], betas[vn][k, :])
+                if model.likelihoods[vn] == "bernoulli":
+                    y_pred_cov_k = _sigmoid(y_pred_cov_k)
+                y_pred_cov_k[mask] = 0.0
                 cov_scores[score_key][k] = metric_fn(y_true_view, y_pred_cov_k)
 
-    factor_scores = pd.DataFrame(factor_scores, index=factor_idx)
-    cov_scores = pd.DataFrame(cov_scores, index=cov_idx)
+    factor_scores = pd.DataFrame(
+        factor_scores, index=[] if factor_idx is None else factor_idx
+    )
+    cov_scores = pd.DataFrame(cov_scores, index=[] if cov_idx is None else cov_idx)
     if cache:
         model_cache.update_uns(view_scores_key, view_scores)
         model_cache.update_factor_metadata(factor_scores)
@@ -272,6 +304,7 @@ def variance_explained(
     """
 
     def _r2(y_true, y_pred):
+        return r2_score(y_true, y_pred)
         ss_res = np.square(y_true - y_pred).sum()
         ss_tot = np.square(y_true).sum()
         return 1 - (ss_res / ss_tot)

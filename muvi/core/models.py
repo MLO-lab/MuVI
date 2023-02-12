@@ -387,7 +387,7 @@ class MuVI(PyroModule):
         if n_dense_factors > 0:
             prior_masks = {
                 vn: np.concatenate(
-                    [vm, np.ones((n_dense_factors, self.n_features[vn]))]
+                    [vm, np.ones((n_dense_factors, self.n_features[vn])).astype(bool)]
                 )
                 for vn, vm in masks.items()
             }
@@ -638,7 +638,8 @@ class MuVI(PyroModule):
 
         for vn in obs_hat.keys():
             if self.likelihoods[vn] == "bernoulli":
-                obs_hat[vn] = np.rint(_sigmoid(obs_hat[vn]))
+                obs_hat[vn] = _sigmoid(obs_hat[vn])
+                # obs_hat[vn] = np.rint(obs_hat[vn])
 
         if as_df:
             obs_hat = {

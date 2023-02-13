@@ -81,7 +81,7 @@ def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
 
 def variance_explained(
     model,
-    sort=50,
+    top=50,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
@@ -102,11 +102,11 @@ def variance_explained(
     if r2_cov is not None:
         r2_cov = r2_cov.loc[:, r2_columns].T
 
-    if sort:
+    if top > 0:
         r2_argsort = r2_fac.sum().argsort()[::-1]
         r2_fac = r2_fac.iloc[:, r2_argsort]
-    if sort > 1:
-        r2_fac = r2_fac.iloc[:, :sort]
+    if top > 1:
+        r2_fac = r2_fac.iloc[:, :top]
 
     r2_joint = r2_fac
     if r2_cov is not None:
@@ -130,6 +130,57 @@ def variance_explained(
     return savefig_or_show("variance_explained", show=show, save=save)
 
 
+def variance_explained_per_group(
+    model,
+    groupby,
+    groups=None,
+    factor_idx="all",
+    kind="bar",
+    stacked=True,
+    show: bool = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    model_cache = _get_model_cache(model)
+    if groupby not in model_cache.factor_adata.obs.columns:
+        raise ValueError(
+            f"`{groupby}` not found in the metadata, "
+            " add a new column onto `model._cache.factor_adata.obs`."
+        )
+
+    # TODO: at some point extend with covariates
+    metadata = model_cache.factor_adata.obs[groupby]
+    if groups is not None:
+        print(groups)
+        metadata = metadata[metadata.isin(groups)]
+    metadata = metadata.astype("category").cat.remove_unused_categories()
+    group_wise_r2 = (
+        metadata.groupby(metadata)
+        .apply(
+            lambda group_df: muvi.tl.variance_explained(
+                model, sample_idx=group_df.index, factor_idx=factor_idx, subsample=1000
+            )[1]
+            .sum(1)
+            .sort_values()
+        )
+        .reset_index(name=0)
+    )
+
+    r2_col = r"$R^2$"
+    group_wise_r2.columns = [groupby, "Factor", r2_col]
+
+    g = group_wise_r2.pivot(index="Factor", columns=groupby, values=r2_col).plot(
+        kind=kind, stacked=stacked, **kwargs
+    )
+    g.set_ylabel(r2_col)
+
+    g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+
+    if not show:
+        return g
+    return savefig_or_show("variance_explained_per_group", show=show, save=save)
+
+
 def factors_overview(
     model,
     view_idx=0,
@@ -138,7 +189,7 @@ def factors_overview(
     sig_only=False,
     prior_only=False,
     adjusted=False,
-    sort=25,
+    top=25,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
@@ -198,11 +249,11 @@ def factors_overview(
     neg_log_col = r"$-\log_{10}(FDR)$"
     df[neg_log_col] = -np.log10(df[joint_p_col])
     r2_col = f"r2_{view_idx}"
-    if sort > 0:
+    if top > 0:
         df = df.sort_values(r2_col, ascending=True)
 
     g = sns.scatterplot(
-        data=df.iloc[-sort:],
+        data=df.iloc[-top:],
         x=r2_col,
         y=name_col,
         hue=neg_log_col,
@@ -225,7 +276,7 @@ def inspect_factor(
     model,
     factor_idx,
     view_idx="all",
-    sort=25,
+    top=25,
     ranked=True,
     show: bool = None,
     save: Union[bool, str, None] = None,
@@ -285,7 +336,7 @@ def inspect_factor(
             type_col = "Type"
             df[type_col] = df["FP"].map({False: "Annotated", True: "Inferred"})
 
-            if sort > 0:
+            if top > 0:
                 df = df.sort_values(abs_loading_col, ascending=True)
             x = loading_col
             y = name_col
@@ -297,7 +348,7 @@ def inspect_factor(
                 y = loading_col
             g = sns.scatterplot(
                 ax=g,
-                data=df.iloc[-sort:],
+                data=df.iloc[-top:],
                 x=x,
                 y=y,
                 s=kwargs.pop("s", (64)),
@@ -307,7 +358,7 @@ def inspect_factor(
             if ranked:
                 g = sns.scatterplot(
                     ax=g,
-                    data=df.iloc[:-sort],
+                    data=df.iloc[:-top],
                     x=rank_col,
                     y=loading_col,
                     s=10,
@@ -320,13 +371,13 @@ def inspect_factor(
                 x_range = factor_loadings_rank.max()
 
                 labeled_df = (
-                    df.iloc[-sort:].sort_values(loading_col, ascending=False).copy()
+                    df.iloc[-top:].sort_values(loading_col, ascending=False).copy()
                 )
                 labeled_df
                 labeled_df["is_positive"] = labeled_df[loading_col] > 0
 
                 n_positive = labeled_df["is_positive"].sum()
-                n_negative = sort - n_positive
+                n_negative = top - n_positive
                 num = max(n_positive, n_negative)
 
                 labeled_df["x_arrow_pos"] = labeled_df[rank_col] + 0.02 * x_range
@@ -725,7 +776,7 @@ def stripplot(model, factor_idx, groupby, legend_loc="right margin", **kwargs):
         x=groupby, y=y, data=data, hue=kwargs.pop("hue", groupby), **kwargs
     )
     if legend_loc == "right margin":
-        g.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+        g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     return g
 
 
@@ -767,7 +818,7 @@ def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):
         **kwargs,
     )
 
-    g.legend(frameon=False, bbox_to_anchor=(1.04, 0.9), loc="upper left")
+    g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     if not show:
         return g
     return savefig_or_show("scatter", show=show, save=save)

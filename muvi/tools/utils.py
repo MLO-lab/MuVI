@@ -199,7 +199,7 @@ def _recon_error(
         factor_scores[score_key] = np.zeros(n_factors)
         cov_scores[score_key] = np.zeros(n_covariates)
         if factor_wise:
-            for k in tqdm(range(n_factors)):
+            for k in range(n_factors):
                 y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
                 if model.likelihoods[vn] == "bernoulli":
                     y_pred_fac_k = _sigmoid(y_pred_fac_k)

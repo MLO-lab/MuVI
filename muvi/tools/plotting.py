@@ -87,12 +87,6 @@ def variance_explained(
     **kwargs,
 ):
     """Heatmap of variance explained, see `muvi.tl.variance_explained`."""
-    # _, r2_fac, r2_cov = muvi.tl.variance_explained(
-    #     model,
-    #     factor_wise=kwargs.pop("factor_wise", True),
-    #     cov_wise=kwargs.pop("cov_wise", True),
-    #     **kwargs,
-    # )
 
     model_cache = _get_model_cache(model)
     r2_fac = model_cache.factor_metadata
@@ -149,7 +143,7 @@ def factors_overview(
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
-    """Scatterplot of variance explained along with significance test resutls,
+    """Scatterplot of variance explained along with significance test results,
     see `muvi.tl.test`."""
     if isinstance(view_idx, int):
         view_idx = model.view_names[view_idx]
@@ -230,9 +224,9 @@ def factors_overview(
 def inspect_factor(
     model,
     factor_idx,
-    view_idx=0,
+    view_idx="all",
     sort=25,
-    threshold=0.05,
+    ranked=True,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
@@ -241,64 +235,136 @@ def inspect_factor(
     view_idx = _normalize_index(view_idx, model.view_names, as_idx=False)
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
 
-    if len(view_idx) > 1:
-        logger.warning(
-            f"Currently supporting only one view, showing results for `{view_idx[0]}`."
-        )
-    view_idx = view_idx[0]
+    n_views = len(view_idx)
+    n_factors = len(factor_idx)
 
-    if len(factor_idx) > 1:
-        logger.warning(
-            "Currently supporting only one factor, "
-            f"showing results for `{factor_idx[0]}`."
-        )
-    factor_idx = factor_idx[0]
-
-    factor_loadings = model.get_factor_loadings(view_idx, factor_idx, as_df=True)[
-        view_idx
-    ].iloc[0, :]
-    factor_mask = pd.Series(False, index=factor_loadings.index)
-    if model._informed:
-        factor_mask = model.get_prior_masks(view_idx, factor_idx, as_df=True)[
-            view_idx
-        ].iloc[0, :]
-    else:
-        logger.warning("Model not informed a priori, all features are inferred.")
-    factor_loadings_abs = np.abs(factor_loadings)
-
-    name_col = "Feature"
-    loading_col = "Loading"
-    abs_loading_col = "Loading (abs)"
-
-    df = pd.DataFrame(
-        {
-            name_col: model.feature_names[view_idx],
-            "Mask": factor_mask,
-            loading_col: factor_loadings,
-            abs_loading_col: factor_loadings_abs,
-            "FP": ~factor_mask & factor_loadings_abs > threshold,
-        }
+    fig, axs = plt.subplots(
+        n_factors, n_views, squeeze=False, figsize=(n_views * 8, n_factors * 8)
     )
 
-    type_col = "Type"
-    df[type_col] = df["FP"].map({False: "Annotated", True: "Inferred"})
+    for m in range(n_views):
+        view_name = view_idx[m]
+        for k in range(n_factors):
+            factor_name = factor_idx[k]
+            i = k * n_views + m
+            g = axs[k, m]
+            # only last
+            show_legend = i == n_views * n_factors - 1
 
-    if sort > 0:
-        df = df.sort_values(abs_loading_col, ascending=True)
-    g = sns.scatterplot(
-        data=df.iloc[-sort:],
-        x=loading_col,
-        y=name_col,
-        hue=type_col,
-        hue_order=["Annotated", "Inferred"],
-        palette={"Annotated": "black", "Inferred": "red"},
-        s=kwargs.pop("s", (64)),
-        **kwargs,
-    )
-    g.set_title(f"Overview factor {factor_idx} in {view_idx}")
+            factor_loadings = model.get_factor_loadings(
+                view_name, factor_name, as_df=True
+            )[view_name].iloc[0, :]
+            factor_mask = pd.Series(False, index=factor_loadings.index)
+            if model._informed:
+                factor_mask = model.get_prior_masks(view_name, factor_name, as_df=True)[
+                    view_name
+                ].iloc[0, :]
+            else:
+                logger.warning(
+                    "Model not informed a priori, all features are inferred."
+                )
+            factor_loadings_abs = np.abs(factor_loadings)
+            factor_loadings_rank = factor_loadings.rank(ascending=False)
+
+            name_col = "Feature"
+            loading_col = "Loading"
+            rank_col = "Rank"
+            abs_loading_col = "Loading (abs)"
+
+            df = pd.DataFrame(
+                {
+                    name_col: model.feature_names[view_name],
+                    "Mask": factor_mask,
+                    loading_col: factor_loadings,
+                    abs_loading_col: factor_loadings_abs,
+                    rank_col: factor_loadings_rank,
+                    "FP": ~factor_mask & factor_loadings_abs > 0.05,
+                }
+            )
+
+            type_col = "Type"
+            df[type_col] = df["FP"].map({False: "Annotated", True: "Inferred"})
+
+            if sort > 0:
+                df = df.sort_values(abs_loading_col, ascending=True)
+            x = loading_col
+            y = name_col
+            kwargs["hue"] = type_col
+            kwargs["hue_order"] = ["Annotated", "Inferred"]
+            kwargs["palette"] = {"Annotated": "black", "Inferred": "red"}
+            if ranked:
+                x = rank_col
+                y = loading_col
+            g = sns.scatterplot(
+                ax=g,
+                data=df.iloc[-sort:],
+                x=x,
+                y=y,
+                s=kwargs.pop("s", (64)),
+                legend=show_legend and not ranked,
+                **kwargs,
+            )
+            if ranked:
+                g = sns.scatterplot(
+                    ax=g,
+                    data=df.iloc[:-sort],
+                    x=rank_col,
+                    y=loading_col,
+                    s=10,
+                    legend=show_legend,
+                    **kwargs,
+                )
+
+                y_max = factor_loadings.max()
+                y_min = factor_loadings.min()
+                x_range = factor_loadings_rank.max()
+
+                labeled_df = (
+                    df.iloc[-sort:].sort_values(loading_col, ascending=False).copy()
+                )
+                labeled_df
+                labeled_df["is_positive"] = labeled_df[loading_col] > 0
+
+                n_positive = labeled_df["is_positive"].sum()
+                n_negative = sort - n_positive
+                num = max(n_positive, n_negative)
+
+                labeled_df["x_arrow_pos"] = labeled_df[rank_col] + 0.02 * x_range
+                labeled_df["x_text_pos"] = labeled_df["x_arrow_pos"] + 0.15 * x_range
+                labeled_df["y_arrow_pos"] = labeled_df[loading_col]
+                labeled_df["y_text_pos"] = (
+                    np.linspace(y_max, 0.1 * y_max, num=num)[:n_positive].tolist()
+                    + np.linspace(y_min, -0.1 * y_min, num=num)[:n_negative][
+                        ::-1
+                    ].tolist()
+                )
+                labeled_df
+
+                for i, row in labeled_df.iterrows():
+                    g.text(
+                        row["x_text_pos"],
+                        row["y_text_pos"],
+                        row[name_col],
+                        color=kwargs["palette"][row[type_col]],
+                        fontsize="medium",
+                    )
+                    g.annotate(
+                        "",
+                        (row["x_arrow_pos"], row["y_arrow_pos"]),
+                        xytext=(row["x_text_pos"], row["y_text_pos"]),
+                        # bbox=dict(boxstyle="round", alpha=0.1),
+                        arrowprops={
+                            "arrowstyle": "simple,tail_width=0.01,head_width=0.15",
+                            "color": "black",
+                        },
+                    )
+
+            g.set_title(f"{factor_name}({view_name})")
+
+    fig.tight_layout()
     if not show:
-        return g
-    return savefig_or_show(f"overview_factor_{factor_idx}", show=show, save=save)
+        return fig, axs
+    return savefig_or_show("overview_factors", show=show, save=save)
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
@@ -482,7 +548,7 @@ def factor_activity(
     return g, activity_df
 
 
-# scanpy plotting..
+# scanpy plotting
 
 
 # plot latent embeddings

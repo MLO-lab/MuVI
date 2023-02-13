@@ -9,7 +9,7 @@ from muvi.tools.utils import variance_explained
 logger = logging.getLogger(__name__)
 
 
-def save_as_mofa(
+def save_as_hdf5(
     model,
     path,
     save_metadata=False,
@@ -24,7 +24,14 @@ def save_as_mofa(
         os.remove(path)
 
     default_group_name = "group_0"
-    r2_view, r2_factor, _ = variance_explained(model)
+    logger.info(
+        "Setting default group name to "
+        f"`{default_group_name}` for single group data."
+    )
+    logger.info("Computing variance explained.")
+    r2_view, r2_factor, _ = variance_explained(
+        model, subsample=0 if model.n_samples < 5000 else 1000
+    )
 
     f = h5py.File(path, "w")
 

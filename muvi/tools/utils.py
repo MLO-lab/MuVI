@@ -8,7 +8,7 @@ import pandas as pd
 import scanpy as sc
 import scipy
 from scipy.optimize import linprog
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error
 from statsmodels.stats import multitest
 from tqdm import tqdm
 
@@ -105,6 +105,8 @@ def _sigmoid(x):
 def _recon_error(
     model,
     view_idx,
+    sample_idx,
+    feature_idx,
     factor_idx,
     cov_idx,
     factor_wise,
@@ -139,15 +141,18 @@ def _recon_error(
     factor_wise &= factor_idx is not None
     cov_wise &= cov_idx is not None
 
-    sample_idx = "all"
-    if subsample is not None and subsample > 0 and subsample < model.n_samples:
-        logger.info(
-            f"Estimating `{metric_label}` with a random sample of "
-            f"{subsample} samples."
-        )
-        sample_idx = np.random.choice(model.n_samples, subsample, replace=False)
+    if sample_idx is None:
+        sample_idx = "all"
+        if subsample is not None and subsample > 0 and subsample < model.n_samples:
+            logger.info(
+                f"Estimating `{metric_label}` with a random sample of "
+                f"{subsample} samples."
+            )
+            sample_idx = np.random.choice(model.n_samples, subsample, replace=False)
 
-    ys = model.get_observations(view_idx, sample_idx=sample_idx)
+    ys = model.get_observations(
+        view_idx, sample_idx=sample_idx, feature_idx=feature_idx
+    )
     view_names = list(ys.keys())
 
     view_scores_key = f"view_{metric_label}"
@@ -167,12 +172,12 @@ def _recon_error(
     n_factors = 0
     if factor_idx is not None:
         z = model.get_factor_scores(sample_idx=sample_idx, factor_idx=factor_idx)
-        ws = model.get_factor_loadings(view_idx, factor_idx)
+        ws = model.get_factor_loadings(view_idx, factor_idx, feature_idx)
         n_factors = len(factor_idx)
     n_covariates = 0
     if cov_idx is not None:
         x = model.get_covariates(sample_idx=sample_idx, cov_idx=cov_idx)
-        betas = model.get_covariate_coefficients(view_idx, cov_idx)
+        betas = model.get_covariate_coefficients(view_idx, cov_idx, feature_idx)
         n_covariates = len(cov_idx)
 
     view_scores = {}
@@ -182,8 +187,6 @@ def _recon_error(
     for m, vn in enumerate(view_names):
         score_key = cache_columns[m]
         y_true_view = ys[vn]
-        mask = np.isnan(y_true_view)
-        y_true_view[mask] = 0.0
         y_pred_view = np.zeros_like(y_true_view)
         if n_factors > 0:
             y_pred_view += z @ ws[vn]
@@ -191,7 +194,6 @@ def _recon_error(
                 y_pred_view = _sigmoid(y_pred_view)
         if n_covariates > 0:
             y_pred_view += x @ betas[vn]
-        y_pred_view[mask] = 0.0
         view_scores[vn] = metric_fn(y_true_view, y_pred_view)
 
         factor_scores[score_key] = np.zeros(n_factors)
@@ -201,14 +203,12 @@ def _recon_error(
                 y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
                 if model.likelihoods[vn] == "bernoulli":
                     y_pred_fac_k = _sigmoid(y_pred_fac_k)
-                y_pred_fac_k[mask] = 0.0
                 factor_scores[score_key][k] = metric_fn(y_true_view, y_pred_fac_k)
         if cov_wise:
             for k in range(n_covariates):
                 y_pred_cov_k = np.outer(x[:, k], betas[vn][k, :])
                 if model.likelihoods[vn] == "bernoulli":
                     y_pred_cov_k = _sigmoid(y_pred_cov_k)
-                y_pred_cov_k[mask] = 0.0
                 cov_scores[score_key][k] = metric_fn(y_true_view, y_pred_cov_k)
 
     factor_scores = pd.DataFrame(
@@ -225,6 +225,8 @@ def _recon_error(
 def rmse(
     model,
     view_idx: Index = "all",
+    sample_idx: Index = "all",
+    feature_idx: Index = "all",
     factor_idx: Index = "all",
     cov_idx: Index = "all",
     factor_wise: bool = True,
@@ -240,6 +242,10 @@ def rmse(
         A MuVI model
     view_idx : Index, optional
         View index, by default "all"
+    sample_idx : Index, optional
+        Sample index, by default "all"
+    feature_idx : Index, optional
+        Feature index, by default "all"
     factor_idx : Index, optional
         Factor index, by default "all"
     cov_idx : Index, optional
@@ -260,6 +266,8 @@ def rmse(
     return _recon_error(
         model,
         view_idx,
+        sample_idx,
+        feature_idx,
         factor_idx,
         cov_idx,
         factor_wise,
@@ -274,6 +282,8 @@ def rmse(
 def variance_explained(
     model,
     view_idx: Index = "all",
+    sample_idx: Index = "all",
+    feature_idx: Index = "all",
     factor_idx: Index = "all",
     cov_idx: Index = "all",
     factor_wise: bool = True,
@@ -289,6 +299,10 @@ def variance_explained(
         A MuVI model
     view_idx : Index, optional
         View index, by default "all"
+    sample_idx : Index, optional
+        Sample index, by default "all"
+    feature_idx : Index, optional
+        Feature index, by default "all"
     factor_idx : Index, optional
         Factor index, by default "all"
     cov_idx : Index, optional
@@ -304,14 +318,16 @@ def variance_explained(
     """
 
     def _r2(y_true, y_pred):
-        return r2_score(y_true, y_pred)
-        ss_res = np.square(y_true - y_pred).sum()
-        ss_tot = np.square(y_true).sum()
-        return 1 - (ss_res / ss_tot)
+        # return r2_score(y_true, y_pred)
+        ss_res = np.nansum(np.square(y_true - y_pred))
+        ss_tot = np.nansum(np.square(y_true))
+        return 1.0 - (ss_res / ss_tot)
 
     return _recon_error(
         model,
         view_idx,
+        sample_idx,
+        feature_idx,
         factor_idx,
         cov_idx,
         factor_wise,

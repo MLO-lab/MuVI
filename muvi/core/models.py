@@ -1044,7 +1044,8 @@ class MuVI(PyroModule):
 
         if n_particles < 1:
             n_particles = max(1, 1000 // batch_size)
-        logger.info(f"Using {n_particles} particles in parallel.")
+        if n_particles > 1:
+            logger.info(f"Using {n_particles} particles in parallel.")
         logger.info("Preparing model and guide...")
         self._setup_model_guide(batch_size)
         logger.info("Preparing optimizer...")
@@ -1351,6 +1352,10 @@ class MuVIModel(PyroModule):
                     )
                 else:
                     y_dist = dist.Bernoulli(logits=y_loc[..., feature_idx])
+                    # y_dist = dist.RelaxedBernoulliStraightThrough(
+                    #     torch.ones_like(y_loc[..., feature_idx]) * 0.1,
+                    #     logits=y_loc[..., feature_idx],
+                    # )
 
                 with pyro.poutine.mask(mask=mask[..., feature_idx]):
                     ys.append(

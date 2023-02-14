@@ -164,18 +164,21 @@ def variance_explained_grouped(
     view_idx = _normalize_index(view_idx, model.view_names, as_idx=False)
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
 
-    group_wise_r2 = model_cache.uns[model_cache.UNS_GROUPED_R2].copy()
-    groupby = group_wise_r2.columns[0]
+    data = model_cache.uns[model_cache.UNS_GROUPED_R2].copy()
+    groupby = data.columns[0]
 
-    group_wise_r2 = group_wise_r2[group_wise_r2["Factor"].isin(factor_idx)]
+    data = data[data["Factor"].isin(factor_idx)]
 
-    group_wise_r2[model_cache.METRIC_R2] = group_wise_r2[
+    data[model_cache.METRIC_R2] = data[
         [f"{model_cache.METRIC_R2}_{vn}" for vn in view_idx]
     ].sum(1)
     if groups is not None:
-        group_wise_r2 = group_wise_r2[group_wise_r2[groupby].isin(groups)]
+        data = data[data[groupby].isin(groups)]
 
-    g = group_wise_r2.pivot(
+    if data.empty:
+        raise ValueError("Empty data, check whether the provided `groups` are correct.")
+
+    g = data.pivot(
         index="Factor",
         columns=groupby,
         values=model_cache.METRIC_R2,
@@ -780,21 +783,60 @@ def clustermap(model, factor_idx="all", **kwargs):
     )
 
 
-def stripplot(model, factor_idx, groupby, legend_loc="right margin", **kwargs):
-    y = _normalize_index(factor_idx, model.factor_names, as_idx=False)[0]
+def stripplot(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    legend_loc="right margin",
+    show: bool = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
+    if len(factor_idx) > 1:
+        logger.warning(
+            "Multiple factor indices not yet supported, "
+            f"plotting only for the first factor: `{factor_idx[0]}`."
+        )
+    factor_idx = factor_idx[0]
+
+    model_cache = _get_model_cache(model)
+    if groupby not in model_cache.factor_adata.obs.columns:
+        raise ValueError(
+            f"`{groupby}` not found in the metadata, "
+            " add a new column onto `model._cache.factor_adata.obs`."
+        )
     data = pd.concat(
         [
-            model._cache.factor_adata.to_df()[factor_idx],
-            model._cache.factor_adata.obs[groupby],
+            model_cache.factor_adata.to_df()[factor_idx],
+            model_cache.factor_adata.obs[groupby],
         ],
         axis=1,
     )
+
+    if groups is not None:
+        data = data[data[groupby].isin(groups)]
+        data[groupby] = data[groupby].cat.remove_unused_categories()
+
+    if data.empty:
+        raise ValueError("Empty data, check whether the provided `groups` are correct.")
+
     g = sns.stripplot(
-        x=groupby, y=y, data=data, hue=kwargs.pop("hue", groupby), **kwargs
+        x=groupby,
+        y=factor_idx,
+        data=data,
+        hue=kwargs.pop("hue", groupby),
+        palette=kwargs.pop(
+            "palette", _get_color_dict(model_cache.factor_adata, groupby)
+        ),
+        **kwargs,
     )
     if legend_loc == "right margin":
         g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
-    return g
+    if not show:
+        return g
+    return savefig_or_show("stripplot", show=show, save=save)
 
 
 def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):

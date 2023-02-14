@@ -339,6 +339,42 @@ def variance_explained(
     )
 
 
+def variance_explained_grouped(
+    model, groupby, view_idx: Index = "all", factor_idx: Index = "all", **kwargs
+):
+    model_cache = setup_cache(model)
+    if groupby not in model_cache.factor_adata.obs.columns:
+        raise ValueError(
+            f"`{groupby}` not found in the metadata, "
+            " add a new column onto `model._cache.factor_adata.obs`."
+        )
+
+    # TODO: at some point extend with covariates
+    metadata = (
+        model_cache.factor_adata.obs[groupby]
+        .astype("category")
+        .cat.remove_unused_categories()
+    )
+    group_wise_r2 = (
+        metadata.groupby(metadata)
+        .apply(
+            lambda group_df: variance_explained(
+                model,
+                view_idx,
+                sample_idx=group_df.index,
+                factor_idx=factor_idx,
+                **kwargs,
+            )[1]
+        )
+        .reset_index()
+    )
+
+    model._cache.uns[Cache.UNS_GROUPED_R2] = group_wise_r2.rename(
+        columns={"level_1": "Factor"}
+    )
+    return model._cache.uns[Cache.UNS_GROUPED_R2]
+
+
 def test(
     model,
     view_idx: Union[str, int] = 0,

@@ -37,6 +37,19 @@ def savefig_or_show(
     return sc.pl._utils.savefig_or_show(writekey, show, dpi, ext, save)
 
 
+def _get_color_dict(factor_adata, groupby):
+    uns_colors_key = f"{groupby}_colors"
+    if uns_colors_key not in factor_adata.uns:
+        return None
+
+    return dict(
+        zip(
+            factor_adata.obs[groupby].astype("category").cat.categories,
+            factor_adata.uns[uns_colors_key],
+        )
+    )
+
+
 def _get_model_cache(model):
     cache = model._cache
     if cache is None:
@@ -130,11 +143,11 @@ def variance_explained(
     return savefig_or_show("variance_explained", show=show, save=save)
 
 
-def variance_explained_per_group(
+def variance_explained_grouped(
     model,
-    groupby,
     groups=None,
     factor_idx="all",
+    view_idx="all",
     kind="bar",
     stacked=True,
     show: bool = None,
@@ -142,43 +155,47 @@ def variance_explained_per_group(
     **kwargs,
 ):
     model_cache = _get_model_cache(model)
-    if groupby not in model_cache.factor_adata.obs.columns:
+    if model_cache.UNS_GROUPED_R2 not in model_cache.uns:
         raise ValueError(
-            f"`{groupby}` not found in the metadata, "
-            " add a new column onto `model._cache.factor_adata.obs`."
+            f"`{model_cache.UNS_GROUPED_R2}` not found in model cache, "
+            "rerun `muvi.tl.variance_explained_grouped`."
         )
 
-    # TODO: at some point extend with covariates
-    metadata = model_cache.factor_adata.obs[groupby]
+    view_idx = _normalize_index(view_idx, model.view_names, as_idx=False)
+    factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
+
+    group_wise_r2 = model_cache.uns[model_cache.UNS_GROUPED_R2].copy()
+    groupby = group_wise_r2.columns[0]
+
+    group_wise_r2 = group_wise_r2[group_wise_r2["Factor"].isin(factor_idx)]
+
+    group_wise_r2[model_cache.METRIC_R2] = group_wise_r2[
+        [f"{model_cache.METRIC_R2}_{vn}" for vn in view_idx]
+    ].sum(1)
     if groups is not None:
-        print(groups)
-        metadata = metadata[metadata.isin(groups)]
-    metadata = metadata.astype("category").cat.remove_unused_categories()
-    group_wise_r2 = (
-        metadata.groupby(metadata)
-        .apply(
-            lambda group_df: muvi.tl.variance_explained(
-                model, sample_idx=group_df.index, factor_idx=factor_idx, subsample=1000
-            )[1]
-            .sum(1)
-            .sort_values()
-        )
-        .reset_index(name=0)
-    )
+        group_wise_r2 = group_wise_r2[group_wise_r2[groupby].isin(groups)]
 
-    r2_col = r"$R^2$"
-    group_wise_r2.columns = [groupby, "Factor", r2_col]
-
-    g = group_wise_r2.pivot(index="Factor", columns=groupby, values=r2_col).plot(
-        kind=kind, stacked=stacked, **kwargs
+    g = group_wise_r2.pivot(
+        index="Factor",
+        columns=groupby,
+        values=model_cache.METRIC_R2,
+    ).plot(
+        kind=kind,
+        stacked=stacked,
+        color=kwargs.pop("color", _get_color_dict(model_cache.factor_adata, groupby)),
+        **kwargs,
     )
-    g.set_ylabel(r2_col)
+    g.set_ylabel(r"$R^2$")
 
     g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
 
+    g.set_title(
+        f"Variance explained across groups in {groupby} in {', '.join(view_idx)}"
+    )
+
     if not show:
         return g
-    return savefig_or_show("variance_explained_per_group", show=show, save=save)
+    return savefig_or_show("variance_explained_grouped", show=show, save=save)
 
 
 def factors_overview(

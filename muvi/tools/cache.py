@@ -21,6 +21,8 @@ class Cache:
     TEST_P_ADJ = "p_adj"
     TEST_T = "t"
 
+    UNS_GROUPED_R2 = "grouped_r2"
+
     def __init__(self, model) -> None:
         self.clear()
         self.setup(model)

@@ -37,17 +37,50 @@ def savefig_or_show(
     return sc.pl._utils.savefig_or_show(writekey, show, dpi, ext, save)
 
 
-def _get_color_dict(factor_adata, groupby):
+def _subset_df(data, groupby, groups, include_rest=True):
+    if groups is None:
+        return data
+
+    if include_rest:
+        data[groupby] = data[groupby].cat.add_categories(include_rest)
+        data.loc[~data[groupby].isin(groups), groupby] = include_rest
+        groups.append(include_rest)
+    data = data.loc[data[groupby].isin(groups), :].copy()
+    data[groupby] = data[groupby].cat.remove_unused_categories()
+
+    if data.empty:
+        raise ValueError("Empty data, check whether the provided `groups` are correct.")
+
+    return data
+
+
+def _setup_legend(
+    g, bbox_to_anchor=(1, 0.5), loc="center left", frameon=False, remove_last=False
+):
+    kwargs = {"bbox_to_anchor": bbox_to_anchor, "loc": loc, "frameon": frameon}
+
+    if remove_last:
+        handles, labels = g.get_legend_handles_labels()
+        kwargs["handles"] = handles[:-1]
+        kwargs["labels"] = labels[:-1]
+    g.legend(**kwargs)
+
+    return g
+
+
+def _get_color_dict(factor_adata, groupby, include_rest=True):
     uns_colors_key = f"{groupby}_colors"
     if uns_colors_key not in factor_adata.uns:
         return None
-
-    return dict(
+    color_dict = dict(
         zip(
             factor_adata.obs[groupby].astype("category").cat.categories,
             factor_adata.uns[uns_colors_key],
         )
     )
+    if include_rest:
+        color_dict[include_rest] = "#D3D3D3"
+    return color_dict
 
 
 def _get_model_cache(model):
@@ -145,9 +178,9 @@ def variance_explained(
 
 def variance_explained_grouped(
     model,
-    groups=None,
-    factor_idx="all",
+    factor_idx,
     view_idx="all",
+    groups=None,
     kind="bar",
     stacked=True,
     show: bool = None,
@@ -172,11 +205,8 @@ def variance_explained_grouped(
     data[model_cache.METRIC_R2] = data[
         [f"{model_cache.METRIC_R2}_{vn}" for vn in view_idx]
     ].sum(1)
-    if groups is not None:
-        data = data[data[groupby].isin(groups)]
 
-    if data.empty:
-        raise ValueError("Empty data, check whether the provided `groups` are correct.")
+    data = _subset_df(data, groupby, groups)
 
     g = data.pivot(
         index="Factor",
@@ -190,7 +220,7 @@ def variance_explained_grouped(
     )
     g.set_ylabel(r"$R^2$")
 
-    g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+    g = _setup_legend(g)
 
     g.set_title(
         f"Variance explained across groups in {groupby} in {', '.join(view_idx)}"
@@ -220,19 +250,19 @@ def factors_overview(
         view_idx = model.view_names[view_idx]
 
     model_cache = _get_model_cache(model)
-    df = model_cache.factor_metadata.copy()
+    data = model_cache.factor_metadata.copy()
 
     name_col = "Factor"
-    df[name_col] = df.index.astype(str)
+    data[name_col] = data.index.astype(str)
 
     if prior_only:
-        df = df.loc[~df[name_col].str.contains("dense", case=False), :].copy()
+        data = data.loc[~data[name_col].str.contains("dense", case=False), :].copy()
 
     size_col = None
     if model._informed:
         size_col = "Size"
-        df[size_col] = model.get_prior_masks(view_idx, as_df=True)[view_idx].sum(1)
-        df.loc[df[name_col].str.contains("dense", case=False), size_col] = 0
+        data[size_col] = model.get_prior_masks(view_idx, as_df=True)[view_idx].sum(1)
+        data.loc[data[name_col].str.contains("dense", case=False), size_col] = 0
 
     sign_dict = {model_cache.TEST_ALL: " (*)"}
     if one_sided:
@@ -244,13 +274,13 @@ def factors_overview(
     if adjusted:
         p_col = "p_adj"
 
-    p_df = df[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]]
+    p_df = data[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]]
     if p_df.isna().all(None) and sig_only:
         raise ValueError("No test results found in model cache, rerun `muvi.tl.test`.")
 
     p_df = p_df.fillna(1.0)
-    df[joint_p_col] = p_df.min(axis=1).clip(1e-10, 1.0)
-    df[direction_col] = p_df.idxmin(axis=1).str[len(p_col) + 1 : len(p_col) + 4]
+    data[joint_p_col] = p_df.min(axis=1).clip(1e-10, 1.0)
+    data[direction_col] = p_df.idxmin(axis=1).str[len(p_col) + 1 : len(p_col) + 4]
 
     if alpha is None:
         alpha = 1.0
@@ -260,20 +290,20 @@ def factors_overview(
     if alpha > 1.0:
         logger.warning("`alpha` larger than 1.0, setting `alpha` to 1.0.")
         alpha = 1.0
-    df.loc[df[joint_p_col] > alpha, direction_col] = ""
+    data.loc[data[joint_p_col] > alpha, direction_col] = ""
     if sig_only:
-        df = df.loc[df[direction_col] != "", :]
+        data = data.loc[data[direction_col] != "", :]
 
-    df[name_col] = df[name_col] + df[direction_col].map(sign_dict).fillna("")
+    data[name_col] = data[name_col] + data[direction_col].map(sign_dict).fillna("")
 
     neg_log_col = r"$-\log_{10}(FDR)$"
-    df[neg_log_col] = -np.log10(df[joint_p_col])
+    data[neg_log_col] = -np.log10(data[joint_p_col])
     r2_col = f"r2_{view_idx}"
     if top > 0:
-        df = df.sort_values(r2_col, ascending=True)
+        data = data.sort_values(r2_col, ascending=True)
 
     g = sns.scatterplot(
-        data=df.iloc[-top:],
+        data=data.iloc[-top:],
         x=r2_col,
         y=name_col,
         hue=neg_log_col,
@@ -342,7 +372,7 @@ def inspect_factor(
             rank_col = "Rank"
             abs_loading_col = "Loading (abs)"
 
-            df = pd.DataFrame(
+            data = pd.DataFrame(
                 {
                     name_col: model.feature_names[view_name],
                     "Mask": factor_mask,
@@ -354,10 +384,10 @@ def inspect_factor(
             )
 
             type_col = "Type"
-            df[type_col] = df["FP"].map({False: "Annotated", True: "Inferred"})
+            data[type_col] = data["FP"].map({False: "Annotated", True: "Inferred"})
 
             if top > 0:
-                df = df.sort_values(abs_loading_col, ascending=True)
+                data = data.sort_values(abs_loading_col, ascending=True)
             x = loading_col
             y = name_col
             kwargs["hue"] = type_col
@@ -368,7 +398,7 @@ def inspect_factor(
                 y = loading_col
             g = sns.scatterplot(
                 ax=g,
-                data=df.iloc[-top:],
+                data=data.iloc[-top:],
                 x=x,
                 y=y,
                 s=kwargs.pop("s", (64)),
@@ -378,7 +408,7 @@ def inspect_factor(
             if ranked:
                 g = sns.scatterplot(
                     ax=g,
-                    data=df.iloc[:-top],
+                    data=data.iloc[:-top],
                     x=rank_col,
                     y=loading_col,
                     s=10,
@@ -390,28 +420,30 @@ def inspect_factor(
                 y_min = factor_loadings.min()
                 x_range = factor_loadings_rank.max()
 
-                labeled_df = (
-                    df.iloc[-top:].sort_values(loading_col, ascending=False).copy()
+                labeled_data = (
+                    data.iloc[-top:].sort_values(loading_col, ascending=False).copy()
                 )
-                labeled_df
-                labeled_df["is_positive"] = labeled_df[loading_col] > 0
+                labeled_data
+                labeled_data["is_positive"] = labeled_data[loading_col] > 0
 
-                n_positive = labeled_df["is_positive"].sum()
+                n_positive = labeled_data["is_positive"].sum()
                 n_negative = top - n_positive
                 num = max(n_positive, n_negative)
 
-                labeled_df["x_arrow_pos"] = labeled_df[rank_col] + 0.02 * x_range
-                labeled_df["x_text_pos"] = labeled_df["x_arrow_pos"] + 0.15 * x_range
-                labeled_df["y_arrow_pos"] = labeled_df[loading_col]
-                labeled_df["y_text_pos"] = (
+                labeled_data["x_arrow_pos"] = labeled_data[rank_col] + 0.02 * x_range
+                labeled_data["x_text_pos"] = (
+                    labeled_data["x_arrow_pos"] + 0.15 * x_range
+                )
+                labeled_data["y_arrow_pos"] = labeled_data[loading_col]
+                labeled_data["y_text_pos"] = (
                     np.linspace(y_max, 0.1 * y_max, num=num)[:n_positive].tolist()
                     + np.linspace(y_min, -0.1 * y_min, num=num)[:n_negative][
                         ::-1
                     ].tolist()
                 )
-                labeled_df
+                labeled_data
 
-                for i, row in labeled_df.iterrows():
+                for i, row in labeled_data.iterrows():
                     g.text(
                         row["x_text_pos"],
                         row["y_text_pos"],
@@ -642,7 +674,14 @@ def umap(model, color, **kwargs):
 
 
 # plot groups of observations against (subset of) factors
-def group(model, factor_idx, groupby, pl_type=HEATMAP, **kwargs):
+def group(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    pl_type=HEATMAP,
+    **kwargs,
+):
     pl_type = pl_type.lower().strip()
 
     if (pl_type in MATRIXPLOT or pl_type in DOTPLOT) and "colorbar_title" not in kwargs:
@@ -669,7 +708,14 @@ def group(model, factor_idx, groupby, pl_type=HEATMAP, **kwargs):
             f"`{pl_type}` is not valid. Select one of {','.join(PL_TYPES)}."
         ) from e
 
-    return pl_fn(_get_model_cache(model).factor_adata, factor_idx, groupby, **kwargs)
+    adata = _get_model_cache(model).factor_adata
+
+    return pl_fn(
+        adata[_subset_df(adata.obs.copy(), groupby, groups).index, :],
+        factor_idx,
+        groupby,
+        **kwargs,
+    )
 
 
 # plot ranked factors against groups of observations
@@ -788,18 +834,12 @@ def stripplot(
     factor_idx,
     groupby,
     groups=None,
-    legend_loc="right margin",
+    include_rest=True,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
-    if len(factor_idx) > 1:
-        logger.warning(
-            "Multiple factor indices not yet supported, "
-            f"plotting only for the first factor: `{factor_idx[0]}`."
-        )
-    factor_idx = factor_idx[0]
 
     model_cache = _get_model_cache(model)
     if groupby not in model_cache.factor_adata.obs.columns:
@@ -809,75 +849,110 @@ def stripplot(
         )
     data = pd.concat(
         [
-            model_cache.factor_adata.to_df()[factor_idx],
+            model_cache.factor_adata.to_df().loc[:, factor_idx],
             model_cache.factor_adata.obs[groupby],
         ],
         axis=1,
     )
 
-    if groups is not None:
-        data = data[data[groupby].isin(groups)]
-        data[groupby] = data[groupby].cat.remove_unused_categories()
+    data = pd.melt(data, id_vars=[groupby], var_name="Factor", value_name="Score")
 
-    if data.empty:
-        raise ValueError("Empty data, check whether the provided `groups` are correct.")
+    data = _subset_df(data, groupby, groups, include_rest=include_rest)
 
     g = sns.stripplot(
-        x=groupby,
-        y=factor_idx,
         data=data,
+        x="Factor",
+        y="Score",
         hue=kwargs.pop("hue", groupby),
         palette=kwargs.pop(
-            "palette", _get_color_dict(model_cache.factor_adata, groupby)
+            "palette",
+            _get_color_dict(
+                model_cache.factor_adata, groupby, include_rest=include_rest
+            ),
         ),
+        dodge=kwargs.pop("dodge", True),
         **kwargs,
     )
-    if legend_loc == "right margin":
-        g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+    g.set_xticklabels(g.get_xticklabels(), rotation=90)
+    g = _setup_legend(g, remove_last=include_rest)
     if not show:
         return g
     return savefig_or_show("stripplot", show=show, save=save)
 
 
-def scatter(model, x, y, groupby=None, style=None, markers=True, **kwargs):
+def scatter(
+    model,
+    x,
+    y,
+    groupby=None,
+    groups=None,
+    include_rest=True,
+    style=None,
+    markers=True,
+    **kwargs,
+):
     x = _normalize_index(x, model.factor_names, as_idx=False)[0]
     y = _normalize_index(y, model.factor_names, as_idx=False)[0]
     kwargs["color"] = groupby
-    adata = _get_model_cache(model).factor_adata
+    model_cache = _get_model_cache(model)
+
+    data = pd.concat(
+        [model_cache.factor_adata.to_df(), model_cache.factor_adata.obs.copy()], axis=1
+    )
+
+    data = _subset_df(data, groupby, groups, include_rest=include_rest)
+    palette = kwargs.pop(
+        "palette",
+        _get_color_dict(model_cache.factor_adata, groupby, include_rest=include_rest),
+    )
 
     if style is None:
-        return sc.pl.scatter(adata, x, y, **kwargs)
-
-    df = pd.concat([adata.to_df(), adata.obs.copy()], axis=1)
-    size = kwargs.pop("size", None)
-    show = kwargs.pop("show", None)
-    save = kwargs.pop("save", None)
+        adata = model_cache.factor_adata
+        if include_rest:
+            groups = groups[:-1]
+        else:
+            adata = adata[data.index, :]
+        return sc.pl.scatter(
+            adata,
+            x,
+            y,
+            groups=groups,
+            palette=[palette[c] for c in adata.obs[groupby].cat.categories],
+            **kwargs,
+        )
 
     logger.warning(
         "Experimental! "
         "Passing a `style` argument does not rely on `sc.pl.scatter`, "
-        "and may lead to undesired results. "
-        "Set `style=None` to fall back to the default behaviour."
+        "and may lead to undesired results."
     )
+
+    size = kwargs.pop("size", None)
+    show = kwargs.pop("show", None)
+    save = kwargs.pop("save", None)
+
     kwargs = {}
 
     if size is None:
-        size = 120000 / df.shape[0]
+        size = 120000 / data.shape[0]
     g = sns.scatterplot(
-        data=df,
+        data=data,
         x=x,
         y=y,
         hue=groupby,
         style=style,
         markers=markers,
         s=size,
-        palette=adata.uns[f"{groupby}_colors"],
-        legend="auto",
-        ax=None,
+        palette=palette,
+        linewidth=kwargs.pop("linewidth", 0),
+        ax=kwargs.pop("ax", None),
         **kwargs,
     )
 
-    g.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+    # getting as close as possible to scanpy plotting style
+    g = _setup_legend(g, remove_last=include_rest)
+
+    g.set_title(groupby)
     if not show:
         return g
     return savefig_or_show("scatter", show=show, save=save)

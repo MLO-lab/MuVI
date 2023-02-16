@@ -35,6 +35,29 @@ def setup_cache(model, overwrite: bool = False):
     return model._cache
 
 
+def get_metadata(model, name):
+    model_cache = setup_cache(model)
+    if name not in model_cache.factor_adata.obs.columns:
+        raise ValueError(
+            f"`{name}` not found in the metadata, "
+            "call `muvi.tl.add_metadata` to add new metadata."
+        )
+
+    return model_cache.factor_adata.obs[name].copy()
+
+
+def add_metadata(model, name, metadata, overwrite=False):
+    model_cache = setup_cache(model)
+    if name in model_cache.factor_adata.obs.columns and not overwrite:
+        raise ValueError(
+            f"`{name}` already found in the metadata, "
+            "set `overwrite=True` to replace the existing values."
+        )
+
+    model_cache.factor_adata.obs[name] = metadata
+    return model_cache.factor_adata.obs[name].copy()
+
+
 def _filter_factors(model, factor_idx: Index):
     """Filter factors for the current analysis."""
     factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)

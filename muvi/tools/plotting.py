@@ -206,7 +206,7 @@ def variance_explained_grouped(
         [f"{model_cache.METRIC_R2}_{vn}" for vn in view_idx]
     ].sum(1)
 
-    data = _subset_df(data, groupby, groups)
+    data = _subset_df(data, groupby, groups, include_rest=False)
 
     g = data.pivot(
         index="Factor",
@@ -222,9 +222,7 @@ def variance_explained_grouped(
 
     g = _setup_legend(g)
 
-    g.set_title(
-        f"Variance explained across groups in {groupby} in {', '.join(view_idx)}"
-    )
+    g.set_title(f"Variance explained across {groupby} groups in {', '.join(view_idx)}")
 
     if not show:
         return g
@@ -462,7 +460,7 @@ def inspect_factor(
                         },
                     )
 
-            g.set_title(f"{factor_name}({view_name})")
+            g.set_title(f"{factor_name} ({view_name})")
 
     fig.tight_layout()
     if not show:
@@ -711,7 +709,9 @@ def group(
     adata = _get_model_cache(model).factor_adata
 
     return pl_fn(
-        adata[_subset_df(adata.obs.copy(), groupby, groups).index, :],
+        adata[
+            _subset_df(adata.obs.copy(), groupby, groups, include_rest=False).index, :
+        ],
         factor_idx,
         groupby,
         **kwargs,
@@ -873,8 +873,9 @@ def stripplot(
         dodge=kwargs.pop("dodge", True),
         **kwargs,
     )
-    g.set_xticklabels(g.get_xticklabels(), rotation=90)
-    g = _setup_legend(g, remove_last=include_rest)
+    if len(factor_idx) > 1:
+        g.set_xticklabels(g.get_xticklabels(), rotation=90)
+    g = _setup_legend(g, remove_last=groups is not None and include_rest)
     if not show:
         return g
     return savefig_or_show("stripplot", show=show, save=save)
@@ -908,7 +909,7 @@ def scatter(
 
     if style is None:
         adata = model_cache.factor_adata
-        if include_rest:
+        if include_rest and groups is not None:
             groups = groups[:-1]
         else:
             adata = adata[data.index, :]
@@ -917,7 +918,6 @@ def scatter(
             x,
             y,
             groups=groups,
-            palette=[palette[c] for c in adata.obs[groupby].cat.categories],
             **kwargs,
         )
 
@@ -950,7 +950,7 @@ def scatter(
     )
 
     # getting as close as possible to scanpy plotting style
-    g = _setup_legend(g, remove_last=include_rest)
+    g = _setup_legend(g, remove_last=groups is not None and include_rest)
 
     g.set_title(groupby)
     if not show:

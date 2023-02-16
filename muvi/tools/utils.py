@@ -362,9 +362,7 @@ def variance_explained(
     )
 
 
-def variance_explained_grouped(
-    model, groupby, view_idx: Index = "all", factor_idx: Index = "all", **kwargs
-):
+def variance_explained_grouped(model, groupby, factor_idx: Index = "all", **kwargs):
     model_cache = setup_cache(model)
     if groupby not in model_cache.factor_adata.obs.columns:
         raise ValueError(
@@ -383,7 +381,6 @@ def variance_explained_grouped(
         .apply(
             lambda group_df: variance_explained(
                 model,
-                view_idx,
                 sample_idx=group_df.index,
                 factor_idx=factor_idx,
                 **kwargs,

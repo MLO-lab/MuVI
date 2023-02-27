@@ -21,4 +21,4 @@ source activate muvi
 cd MuVI
 poetry install
 ```
-5. Check out [basic tutorial](examples/basic_tutorial.ipynb) to get familiar with MuVI!
+5. Check out [basic tutorial](examples/1_basic_tutorial.ipynb) to get familiar with MuVI!

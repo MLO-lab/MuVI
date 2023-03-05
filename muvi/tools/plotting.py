@@ -208,11 +208,14 @@ def variance_explained_grouped(
 
     data = _subset_df(data, groupby, groups, include_rest=False)
 
-    g = data.pivot(
+    data = data.pivot(
         index="Factor",
         columns=groupby,
         values=model_cache.METRIC_R2,
-    ).plot(
+    )
+    data = data.loc[factor_idx]
+
+    g = data.plot(
         kind=kind,
         stacked=stacked,
         color=kwargs.pop("color", _get_color_dict(model_cache.factor_adata, groupby)),
@@ -223,6 +226,7 @@ def variance_explained_grouped(
     g = _setup_legend(g)
 
     g.set_title(f"Variance explained across {groupby} groups in {', '.join(view_idx)}")
+    g.set(xlabel="Factor")
 
     if not show:
         return g
@@ -835,6 +839,7 @@ def stripplot(
     groupby,
     groups=None,
     include_rest=True,
+    rot: int = 45,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
@@ -873,8 +878,9 @@ def stripplot(
         dodge=kwargs.pop("dodge", True),
         **kwargs,
     )
-    if len(factor_idx) > 1:
-        g.set_xticklabels(g.get_xticklabels(), rotation=90)
+    if rot is not None:
+        for label in g.get_xticklabels():
+            label.set_rotation(rot)
     g = _setup_legend(g, remove_last=groups is not None and include_rest)
     if not show:
         return g

@@ -109,9 +109,7 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
 
     factor_subset = r2_sorted.index
     if r2_thresh < 1.0:
-        factor_subset = r2_sorted[
-            r2_sorted.cumsum() / r2_sorted.sum() < r2_thresh
-        ].index
+        r2_thresh = (r2_sorted.cumsum() / r2_sorted.sum() < r2_thresh).sum() + 1
 
     if r2_thresh > 1.0:
         factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
@@ -140,7 +138,15 @@ def _recon_error(
     metric_fn,
 ):
     if view_idx is None:
-        raise ValueError(f"Invalid view index: `{view_idx}`.")
+        raise ValueError("`view_idx` cannot be None.")
+
+    if model.n_factors == 0:
+        factor_idx = None
+    if model.n_covariates == 0:
+        cov_idx = None
+
+    if factor_idx is None and cov_idx is None:
+        raise ValueError("`factor_idx` and `cov_idx` cannot be both None.")
 
     try:
         factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
@@ -166,12 +172,15 @@ def _recon_error(
 
     if sample_idx is None:
         sample_idx = "all"
-        if subsample is not None and subsample > 0 and subsample < model.n_samples:
-            logger.info(
-                f"Estimating `{metric_label}` with a random sample of "
-                f"{subsample} samples."
-            )
-            sample_idx = np.random.choice(model.n_samples, subsample, replace=False)
+
+    sample_idx = _normalize_index(sample_idx, model.sample_names)
+
+    if subsample is not None and subsample > 0 and subsample < len(sample_idx):
+        logger.info(
+            f"Estimating `{metric_label}` with a random sample of "
+            f"{subsample} samples."
+        )
+        sample_idx = np.random.choice(sample_idx, subsample, replace=False)
 
     ys = model.get_observations(
         view_idx, sample_idx=sample_idx, feature_idx=feature_idx

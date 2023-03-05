@@ -335,7 +335,7 @@ def load_pathways(
         logger.info(
             f"Loading collection `{c}` with at least "
             f"{(fraction_available[i] * 100):2.1f}%% "
-            "of genes available and at least {min_gene_count[i]} genes."
+            f"of genes available and at least {min_gene_count[i]} genes."
         )
 
         gene_sets = msigdb.load(c, id_type="symbols").gene_sets

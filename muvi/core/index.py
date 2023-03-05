@@ -5,6 +5,8 @@ def _normalize_index(indexer, index, as_idx=True):
     # work with ints, convert at the end
     # if single str, get idx and put to list
     # TODO: can be an issue if any of the indices is named 'all'..
+    if indexer is None:
+        raise IndexError("None index.")
     if isinstance(indexer, str):
         if indexer == "all":
             indexer = range(len(index))

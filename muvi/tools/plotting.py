@@ -171,9 +171,9 @@ def variance_explained(
         vlines = None
 
     g = lined_heatmap(r2_joint, figsize=figsize, vlines=vlines, **kwargs)
+    savefig_or_show("variance_explained", show=show, save=save)
     if not show:
         return g
-    return savefig_or_show("variance_explained", show=show, save=save)
 
 
 def variance_explained_grouped(
@@ -228,9 +228,9 @@ def variance_explained_grouped(
     g.set_title(f"Variance explained across {groupby} groups in {', '.join(view_idx)}")
     g.set(xlabel="Factor")
 
+    savefig_or_show("variance_explained_grouped", show=show, save=save)
     if not show:
         return g
-    return savefig_or_show("variance_explained_grouped", show=show, save=save)
 
 
 def factors_overview(
@@ -319,9 +319,9 @@ def factors_overview(
         # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"
     )
     g.set(xlabel=r"$R^2$")
+    savefig_or_show(f"overview_view_{view_idx}", show=show, save=save)
     if not show:
         return g
-    return savefig_or_show(f"overview_view_{view_idx}", show=show, save=save)
 
 
 def inspect_factor(
@@ -467,9 +467,9 @@ def inspect_factor(
             g.set_title(f"{factor_name} ({view_name})")
 
     fig.tight_layout()
+    savefig_or_show("overview_factors", show=show, save=save)
     if not show:
         return fig, axs
-    return savefig_or_show("overview_factors", show=show, save=save)
 
 
 # source: https://github.com/DTrimarchi10/confusion_matrix
@@ -823,7 +823,9 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
     writekey = "rank"
     if len(pl_type) > 0:
         writekey += f"_{pl_type}"
-    return savefig_or_show(writekey, show=show, save=save)
+    savefig_or_show(writekey, show=show, save=save)
+    if not show:
+        return g
 
 
 def clustermap(model, factor_idx="all", **kwargs):
@@ -882,9 +884,9 @@ def stripplot(
         for label in g.get_xticklabels():
             label.set_rotation(rot)
     g = _setup_legend(g, remove_last=groups is not None and include_rest)
+    savefig_or_show("stripplot", show=show, save=save)
     if not show:
         return g
-    return savefig_or_show("stripplot", show=show, save=save)
 
 
 def scatter(
@@ -959,6 +961,6 @@ def scatter(
     g = _setup_legend(g, remove_last=groups is not None and include_rest)
 
     g.set_title(groupby)
+    savefig_or_show("scatter", show=show, save=save)
     if not show:
         return g
-    return savefig_or_show("scatter", show=show, save=save)

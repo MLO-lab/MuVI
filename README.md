@@ -34,7 +34,7 @@ python3 -m pip install git+https://github.com/MLO-lab/MuVI.git
 git clone https://github.com/MLO-lab/MuVI.git
 ```
 
-2. Create a python environment in conda:
+2. Create a python environment in `conda`:
 
 ```bash
 conda create -n muvi python=3.8
@@ -46,7 +46,7 @@ conda create -n muvi python=3.8
 source activate muvi
 ```
 
-4. Install `muvi` with poetry:
+4. Install `muvi` with `poetry`:
 
 ```bash
 cd MuVI

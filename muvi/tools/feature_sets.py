@@ -1,386 +1,592 @@
+# Highly inspired by https://github.com/krassowski/gsea-api
 import logging
-from typing import Collection, Iterable, List, Union
+from collections import Counter
+from functools import lru_cache
+from pathlib import Path
+from typing import Collection, Dict, Iterable, Set, Tuple
 
 import numpy as np
 import pandas as pd
-from gsea_api.molecular_signatures_db import (
-    GeneSet,
-    GeneSets,
-    MolecularSignaturesDatabase,
-)
-
-from muvi.tools import config
+from sklearn.metrics import pairwise_distances
 
 logger = logging.getLogger(__name__)
 
 
-class Pathways(GeneSets):
-    """A collection of pathways/gene sets, wraps GeneSets."""
-
+class FeatureSet:
     def __init__(
         self,
-        gene_sets: Collection[GeneSet],
-        name="",
-        allow_redundant=False,
-        remove_empty=True,
-        path=None,
+        features: Collection[str],
+        name: str,
+        description: str = None,
     ):
-        super().__init__(gene_sets, name, allow_redundant, remove_empty, path)
+        self.name = name
+        self.features = frozenset(features)
+        self.description = description
 
-    def _to_gmt(self, f):
-        for gene_set in self.gene_sets:
-            f.write(
-                gene_set.name
-                + "\t"
-                + gene_set.description
-                + "\t"
-                + "\t".join(gene_set.genes)
-                + "\n"
+        if self.empty:
+            logger.warning(f"FeatureSet {repr(name)} is empty.")
+
+        redundant_features = None
+
+        if len(features) != len(self.features):
+            redundant_features = {
+                feature: count
+                for feature, count in Counter(features).items()
+                if count > 1
+            }
+
+            logger.warning(
+                f"FeatureSet {repr(name)} received a non-unique "
+                f"collection of features; redundant features: {redundant_features}"
             )
 
-    def info(self, verbose: int = 0):
-        """Get an overview of this pathway collection.
+        self.redundant_features = redundant_features
+
+    @property
+    def empty(self):
+        return len(self) == 0
+
+    def __len__(self):
+        return len(self.features)
+
+    def __repr__(self) -> str:
+        features = (
+            ": " + (", ".join(sorted(self.features))) if len(self.features) < 5 else ""
+        )
+        return f"<FeatureSet {repr(self.name)} with {len(self)} features{features}>"
+
+    def __iter__(self) -> Iterable[str]:
+        return iter(self.features)
+
+    def __eq__(self, other: "FeatureSet") -> bool:
+        # return self.name == other.name and self.features == other.features
+        return self.features == other.features
+
+    def __hash__(self) -> int:
+        # return hash((self.name, self.features))
+        return hash(self.features)
+
+    def __and__(self, other: "FeatureSet") -> "FeatureSet":
+        return FeatureSet(
+            self.features & other.features,
+            name=f"{self.name}&{other.name}",
+        )
+
+    def __or__(self, other: "FeatureSet") -> "FeatureSet":
+        return FeatureSet(
+            self.features | other.features,
+            name=f"{self.name}|{other.name}",
+        )
+
+    def __add__(self, other: "FeatureSet") -> "FeatureSet":
+        return self.__or__(other)
+
+    def subset(self, features: Iterable[str]) -> "FeatureSet":
+        """Subset features from a feature set.
 
         Parameters
         ----------
-        verbose : int, optional
-            Level of verbosity, by default 0
+        features : Iterable[str]
+            Features to subset.
 
         Returns
         -------
-        str
-
-        Raises
-        ------
-        ValueError
-            Raised on negative verbosity level
+        FeatureSet
+            A new feature set with the subset of features.
         """
-        if verbose < 0:
-            raise ValueError(
-                f"Invalid verbosity level of `{verbose}`, please use 0, 1 or 2."
+        return FeatureSet(
+            self.features & features,
+            name=self.name,
+        )
+
+
+class FeatureSets:
+    def __init__(
+        self,
+        feature_sets: Collection[FeatureSet],
+        name: str = "UNL",
+        remove_empty: bool = True,
+    ):
+        self.name = name
+
+        if remove_empty:
+            feature_sets = {
+                feature_set for feature_set in feature_sets if not feature_set.empty
+            }
+
+        redundant_feature_sets = None
+
+        if len(set(feature_sets)) != len(feature_sets):
+            redundant_feature_sets = {
+                feature_set: count
+                for feature_set, count in Counter(feature_sets).items()
+                if count > 1
+            }
+
+            logger.warning(
+                f"FeatureSets {repr(name)} received a non-unique "
+                "collection of feature sets; redundant feature sets: "
+                f"{redundant_feature_sets}"
             )
+        self.feature_sets = frozenset(feature_sets)
+        self.redundant_feature_sets = redundant_feature_sets
 
-        info = str(self) + "\n"
+    @property
+    def empty(self):
+        return len(self) == 0
 
-        if verbose == 1:
-            info += "Following gene sets are stored:\n"
-            info += "\n".join([gs.name for gs in self.gene_sets])
-        elif verbose == 2:
-            info += "Following gene sets (with genes) are stored:\n"
-            # double list comprehension is not readable
-            for gene_sets in self.gene_sets:
-                info += (
-                    gene_sets.name
-                    + ": "
-                    + ", ".join([gene for gene in gene_sets.genes])
+    @property
+    def median(self) -> int:
+        return int(np.median([len(fs) for fs in self.feature_sets]))
+
+    @property
+    @lru_cache()
+    def features(self) -> frozenset:
+        return frozenset.union(*[fs.features for fs in self.feature_sets])
+
+    @property
+    @lru_cache()
+    def feature_set_by_name(self) -> dict:
+        return {feature_set.name: feature_set for feature_set in self.feature_sets}
+
+    def __getitem__(self, name: str) -> FeatureSet:
+        return self.feature_set_by_name[name]
+
+    def __len__(self):
+        return len(self.feature_sets)
+
+    def __iter__(self) -> Iterable[FeatureSet]:
+        return iter(self.feature_sets)
+
+    def __repr__(self) -> str:
+        feature_sets = (
+            ": " + (", ".join(sorted({fs.name for fs in self.feature_sets})))
+            if len(self.feature_sets) < 5
+            else ""
+        )
+        return (
+            f"<FeatureSets {repr(self.name)} with {len(self)} "
+            + f"feature sets{feature_sets}>"
+        )
+
+    def __eq__(self, other: "FeatureSets") -> bool:
+        return self.feature_sets == other.feature_sets
+
+    def __hash__(self) -> int:
+        return hash(self.feature_sets)
+
+    def __and__(self, other: "FeatureSets") -> "FeatureSets":
+        return FeatureSets(
+            name=f"{self.name}&{other.name}",
+            feature_sets=self.feature_sets & other.feature_sets,
+        )
+
+    def __or__(self, other: "FeatureSets") -> "FeatureSets":
+        return FeatureSets(
+            name=f"{self.name}|{other.name}",
+            feature_sets=self.feature_sets | other.feature_sets,
+        )
+
+    def __add__(self, other: "FeatureSets") -> "FeatureSets":
+        return self.__or__(other)
+
+    def find(self, partial_name: str):
+        """Perform a simple search given a (partial) feature set name.
+
+        Parameters
+        ----------
+        partial_name : str
+            Feature set (partial) name to search for.
+
+        Returns
+        -------
+        FeatureSets
+            Search results.
+        """
+        return FeatureSets(
+            {
+                feature_set
+                for feature_set in self.feature_sets
+                if partial_name in feature_set.name
+            },
+            name=f"{self.name}:{partial_name}",
+        )
+
+    def remove(self, names: Iterable[str]):
+        """Remove feature sets by name.
+
+        Parameters
+        ----------
+        names : Iterable[str]
+            Collection of feature set names.
+        """
+        return FeatureSets(
+            {
+                feature_set
+                for feature_set in self.feature_sets
+                if feature_set.name not in names
+            },
+            name=self.name,
+        )
+
+    def keep(self, names: Iterable[str]):
+        """Keep feature sets by name.
+
+        Parameters
+        ----------
+        names : Iterable[str]
+            Collection of feature set names.
+        """
+        return FeatureSets(
+            {
+                feature_set
+                for feature_set in self.feature_sets
+                if feature_set.name in names
+            },
+            name=self.name,
+        )
+
+    def trim(self, min_count: int = 1, max_count: int = None):
+        """Trim feature sets by min/max size.
+
+        Parameters
+        ----------
+        min_count : int, optional
+            Minimum number of features, by default 1.
+        max_count : int, optional
+            Maximum number of features, by default None.
+        """
+        return FeatureSets(
+            {
+                feature_set
+                for feature_set in self.feature_sets
+                if min_count
+                <= len(feature_set.features)
+                <= (max_count or len(feature_set.features))
+            },
+            name=self.name,
+        )
+
+    def subset(self, features: Iterable[str]):
+        """Subset feature sets by features.
+
+        Parameters
+        ----------
+        features : Iterable[str]
+            Collection of features.
+        """
+        return FeatureSets(
+            {feature_set.subset(set(features)) for feature_set in self.feature_sets},
+            name=self.name,
+        )
+
+    def filter(
+        self,
+        features: Iterable[str],
+        min_fraction: float = 0.5,
+        min_count: int = 1,
+        keep: Iterable[str] = None,
+        subset: bool = True,
+    ):
+        """Filter feature sets.
+
+        Parameters
+        ----------
+        features : Iterable[str]
+            Features to filter.
+        min_fraction : float, optional
+            Mininimum portion of the feature set to be present in `features`,
+            by default 0.5
+        min_count : int, optional
+            Minimum size of the intersection set
+            between a feature set and the set of `features`,
+            by default 1
+        keep : Iterable[str], optional
+            Feature sets to keep regardless of the filter conditions,
+            by default None
+        subset : bool, optional
+            Whether to subset the resulting feature sets based on `features`,
+            by default True
+
+        Returns
+        -------
+        FeatureSets
+            Filtered feature sets.
+        """
+        features = set(features)
+
+        if keep is None:
+            keep = set()
+
+        feature_set_subset = set()
+
+        for feature_set in self.feature_sets:
+            if feature_set.name in keep:
+                feature_set_subset.add(feature_set)
+                continue
+            intersection = features & feature_set.features
+            count = len(intersection)
+            fraction = count / len(feature_set)
+            if count >= min_count and fraction >= min_fraction:
+                feature_set_subset.add(feature_set)
+
+        filtered_feature_sets = FeatureSets(feature_set_subset, name=self.name)
+        if subset:
+            filtered_feature_sets = filtered_feature_sets.subset(features)
+        return filtered_feature_sets
+
+    def to_mask(
+        self, features: Iterable[str] = None, sort: bool = True
+    ) -> pd.DataFrame:
+        """Convert feature sets to a mask.
+
+        Parameters
+        ----------
+        features : Iterable[str], optional
+            Collection of features, by default None.
+        sort : bool, optional
+            Sort feature sets alphabetically, by default True.
+
+        Returns
+        -------
+        pd.DataFrame
+            Mask of features.
+        """
+        features = features or self.features
+        features_list = list(features)
+        feature_sets_list = list(self.feature_sets)
+        if sort:
+            feature_sets_list = sorted(feature_sets_list, key=lambda fs: fs.name)
+        return pd.DataFrame(
+            [
+                [feature in feature_set.features for feature in features_list]
+                for feature_set in feature_sets_list
+            ],
+            index=[feature_set.name for feature_set in feature_sets_list],
+            columns=features_list,
+        )
+
+    def distance(
+        self, other: "FeatureSets" = None, metric: str = "jaccard"
+    ) -> pd.DataFrame:
+        """Compute distance matrix between feature sets.
+
+        Parameters
+        ----------
+        other : FeatureSets, optional
+            Other feature set collection, by default None.
+        metric : str, optional
+            Distance metric, by default "jaccard".
+
+        Returns
+        -------
+        pd.DataFrame
+            Distance matrix.
+        """
+        self_mask = self.to_mask()
+        other_mask = other.to_mask() if other else self_mask
+        return pd.DataFrame(
+            pairwise_distances(
+                self_mask.to_numpy(), other_mask.to_numpy(), metric=metric
+            ),
+            index=self_mask.index,
+            columns=other_mask.index,
+        )
+
+    def find_similar_pairs(
+        self, metric: str = "jaccard", distance_threshold: float = 0.3
+    ) -> Set[Tuple[str, str]]:
+        """Find similar pairs of feature sets.
+
+        Parameters
+        ----------
+        metric : str, optional
+            Distance metric, by default "jaccard".
+        distance_threshold : float, optional
+            Distance threshold to consider similar pairs,
+            by default 0.3 (jaccard similarity of 0.7).
+
+        Returns
+        -------
+        Set[Tuple[str, str]]
+            Similar pairs of feature sets.
+        """
+        dist_matrix = self.distance(metric=metric)
+
+        pairs = set()
+        visited = set()
+
+        row_offset = 0
+        for current_fs, row in dist_matrix.iterrows():
+            row_offset += 1
+            if row_offset >= len(row):
+                break
+            if current_fs in visited:
+                continue
+            visited.add(current_fs)
+            closest_fs = row.iloc[row_offset:].idxmin()
+            distance = row[closest_fs]
+            if distance <= distance_threshold and closest_fs not in visited:
+                pairs.add((current_fs, closest_fs, distance))
+                visited.add(closest_fs)
+
+        return pairs
+
+    def merge_pairs(self, pairs: Iterable[Tuple[str, str]]):
+        """Merge pairs of feature sets.
+
+        Parameters
+        ----------
+        pairs : Iterable[Tuple[str, str]]
+            Pairs of feature sets.
+
+        Returns
+        -------
+        FeatureSets
+            Merged feature sets.
+        """
+        names_to_remove = set()
+        merged_feature_sets = set()
+        for pair in pairs:
+            merged_feature_sets.add(self[pair[0]] | self[pair[1]])
+            names_to_remove |= {pair[0], pair[1]}
+
+        # remove merged feature sets
+        feature_sets = self.remove(names_to_remove)
+        # then add merged feature sets
+        feature_sets |= FeatureSets(merged_feature_sets)
+        feature_sets.name = self.name
+        return feature_sets
+
+    def merge_similar(
+        self,
+        metric: str = "jaccard",
+        distance_threshold: float = 0.3,
+        iteratively: bool = True,
+    ):
+        feature_sets = self
+        while True:
+            pairs = {
+                (name1, name2)
+                for name1, name2, _ in feature_sets.find_similar_pairs(
+                    metric=metric, distance_threshold=distance_threshold
+                )
+            }
+            stopping = ""
+            if len(pairs) == 0 and iteratively:
+                stopping = " Stopping..."
+            logger.info(f"Found {len(pairs)} pairs to merge.{stopping}")
+            feature_sets = feature_sets.merge_pairs(pairs)
+            if len(pairs) == 0 or not iteratively:
+                break
+        return feature_sets
+
+    def to_gmt(self, path: Path):
+        """Write this feature set collection to a GMT file.
+
+        Parameters
+        ----------
+        path : Path
+            Path to the output file.
+        """
+        with open(path, "w") as f:
+            for feature_set in self.feature_sets:
+                f.write(
+                    feature_set.name
+                    + "\t"
+                    + feature_set.description
+                    + "\t"
+                    + "\t".join(feature_set.features)
                     + "\n"
                 )
 
-        return info
 
-    def merge_duplicates(self):
-        unique_gene_sets = {}
-        for current_gs in self.gene_sets:
-            cgsn = current_gs.name
-            if cgsn in unique_gene_sets:
-                existing_gs = unique_gene_sets[cgsn]
-                new_gs = GeneSet(
-                    name=cgsn,
-                    genes=frozenset().union(*[existing_gs.genes, current_gs.genes]),
+def from_gmt(path: Path, name: str = None, **kwargs) -> FeatureSets:
+    """Create a FeatureSets object from a GMT file.
+
+    Parameters
+    ----------
+    path : Path
+        Path to the GMT file.
+    name : str, optional
+        Name of the collection, by default None.
+
+    Returns
+    -------
+    FeatureSets
+    """
+    feature_sets = set()
+    with open(path) as f:
+        for line in f:
+            fs_name, description, *features = line.strip().split("\t")
+            feature_sets.add(
+                FeatureSet(
+                    features,
+                    name=fs_name,
+                    description=description,
                 )
-                unique_gene_sets[cgsn] = new_gs
-            else:
-                unique_gene_sets[cgsn] = current_gs
-
-        return Pathways(unique_gene_sets.values())
-
-    def find(self, partial_gene_set_names: Iterable[str]):
-        """Perform a simple search given a list of (partial) gene set names.
-
-        Parameters
-        ----------
-        partial_gene_set_names : Iterable[str]
-            Collection of gene set names
-
-        Returns
-        -------
-        dict
-            Search results as a dictionary of
-            {partial_gene_set_names[0]: [GeneSet], ...}
-        """
-        search_results = {partial_gsn: [] for partial_gsn in partial_gene_set_names}
-        for partial_gsn in partial_gene_set_names:
-            search_results[partial_gsn] = [
-                full_gs for full_gs in self.gene_sets if partial_gsn in full_gs.name
-            ]
-
-        return search_results
-
-    def remove(self, gene_set_names: Iterable[str]):
-        """Remove specific pathways.
-
-        Parameters
-        ----------
-        gene_sets : Iterable[str]
-            List of names (str) of unwanted pathways
-
-        Returns
-        -------
-        Pathways
-        """
-        return Pathways(
-            {
-                GeneSet(
-                    name=gene_set.name,
-                    description=gene_set.description,
-                    genes=gene_set.genes,
-                )
-                for gene_set in self.gene_sets
-                if gene_set.name not in gene_set_names
-            }
-        )
-
-    def keep(self, gene_set_names: Iterable[str]):
-        """Keep specific pathways.
-
-        Parameters
-        ----------
-        gene_sets : Iterable[str]
-            List of names (str) of unwanted pathways
-
-        Returns
-        -------
-        Pathways
-        """
-        return Pathways(
-            {
-                GeneSet(
-                    name=gene_set.name,
-                    description=gene_set.description,
-                    genes=gene_set.genes,
-                )
-                for gene_set in self.gene_sets
-                if gene_set.name in gene_set_names
-            }
-        )
-
-    def subset(
-        self,
-        genes: Iterable[str],
-        fraction_available: float = 0.5,
-        min_gene_count: int = 0,
-        max_gene_count: int = -1,
-        keep: Iterable[str] = None,
-    ):
-        """Extract a subset of pathways available in a collection of genes.
-
-        Parameters
-        ----------
-        genes : Iterable[str]
-            List of genes
-        fraction_available : float, optional
-            What fraction of the pathway genes should be available
-            in the genes collection to insert the pathway into the subset,
-            by default 0.5 (half of genes of a pathway must be present)
-        min_gene_count : int, optional
-            Minimal number of pathway genes available in the data
-            for the pathway to be considered in the subset
-        max_gene_count : int, optional
-            Maximal number of pathway genes available in the data
-            for the pathway to be considered in the subset
-        keep : Iterable[str]
-            List of pathways to keep regardless of filters
-
-        Returns
-        -------
-        Pathways
-        """
-        if keep is None:
-            keep = []
-
-        if not isinstance(genes, set):
-            genes = set(genes)
-
-        pathways_subset = set()
-        for gene_set in self.gene_sets:
-            gene_intersection = gene_set.genes & genes  # intersection
-            available_genes = len(gene_intersection)
-            gene_fraction = available_genes / len(gene_set.genes)
-            if available_genes == 0:
-                continue
-            if gene_set.name in keep:
-                logger.info(
-                    f"Keeping {available_genes} out of "
-                    f"{len(gene_set.genes)} genes {gene_fraction:.2f} "
-                    f"from the special gene set `{gene_set.name}`.",
-                )
-            if gene_set.name in keep or (
-                gene_fraction >= fraction_available
-                and available_genes >= min_gene_count
-            ):
-                if max_gene_count < 0 or available_genes <= max_gene_count:
-                    pathways_subset.add(
-                        GeneSet(
-                            name=gene_set.name,
-                            description=gene_set.description,
-                            genes=gene_intersection,
-                            warn_if_empty=False,
-                        )
-                    )
-
-        return Pathways(pathways_subset)
-
-    def to_mask(self, genes: Iterable[str], sort: bool = True):
-        """Generate a binary matrix of pathways x genes.
-
-        Parameters
-        ----------
-        genes : Iterable[str]
-            List of genes
-        sort : bool, optional
-            Whether to sort alphabetically, by default True
-
-        Returns
-        -------
-        ndarray
-        """
-        gene_sets_list = list(self.gene_sets)
-        if sort:
-            gene_sets_list = sorted(gene_sets_list, key=lambda gs: gs.name)
-        # probably faster than calling list.index() for every gene in the pathways
-        gene_to_idx = {k: v for k, v in zip(genes, range(len(genes)))}
-
-        mask = np.zeros((len(gene_sets_list), len(genes)))
-
-        for i, gene_sets in enumerate(gene_sets_list):
-            for gene in gene_sets.genes:
-                if gene in gene_to_idx:
-                    mask[i, gene_to_idx[gene]] = 1.0
-
-        return mask, gene_sets_list
-
-    # assume format: COLLECTION_SOME_LONG_GENE_SET_NAME
-    # return format: Some Long...Name (C)
-    def prettify(self, str_len_threshold=40):
-        new_gene_set_names = set()
-        for gene_set in self.gene_sets:
-            gsn_parts = [part.capitalize() for part in gene_set.name.split("_")]
-            gsn_parts[0] = "(" + gsn_parts[0][0] + ")"
-            # put (C) after the rest of the name
-            gsn_parts = gsn_parts[1:] + gsn_parts[:1]
-
-            new_gene_set_name = " ".join(gsn_parts)
-            if len(new_gene_set_name) > str_len_threshold:
-                half_str_len_threshold = (str_len_threshold - 4) // 2
-                new_gene_set_name = (
-                    new_gene_set_name[:half_str_len_threshold]
-                    + "..."
-                    + new_gene_set_name[-half_str_len_threshold - 3 :]
-                )
-
-            if new_gene_set_name in new_gene_set_names:
-                logger.warning(
-                    f"`{new_gene_set_name}` already existing "
-                    "in the new names, adding a suffix."
-                )
-                for i in range(10):
-                    new_gene_set_name = (
-                        new_gene_set_name[:-3] + f"{i} " + new_gene_set_name[-3:]
-                    )
-                    if new_gene_set_name not in new_gene_set_names:
-                        break
-            new_gene_set_names.add(new_gene_set_name)
-            gene_set.name = new_gene_set_name
-
-
-def load_pathways(
-    collections: Union[str, List[str]],
-    genes: List[str],
-    fraction_available: Union[float, List[float]] = 0.2,
-    min_gene_count: Union[int, List[int]] = 15,
-    max_gene_count: Union[int, List[int]] = -1,
-    keep: List[str] = None,
-    remove: List[str] = None,
-    msigdb_path: str = config.MSIGDB_DIR,
-    msigdb_version: str = "2022.1.Hs",
-):
-    """Load pathways from the existing msigdb."""
-
-    if isinstance(collections, str):
-        collections = [collections]
-    n_collections = len(collections)
-
-    if isinstance(fraction_available, float):
-        fraction_available = [fraction_available for _ in range(n_collections)]
-
-    if isinstance(min_gene_count, int):
-        min_gene_count = [min_gene_count for _ in range(n_collections)]
-
-    if isinstance(max_gene_count, int):
-        max_gene_count = [max_gene_count for _ in range(n_collections)]
-
-    if keep is None:
-        keep = []
-
-    if remove is None:
-        remove = []
-
-    # load msigdb files located at ./msigdb (.gmt extension)
-    msigdb = MolecularSignaturesDatabase(msigdb_path, version=msigdb_version)
-
-    all_gene_sets = tuple()
-    size_dfs = []
-
-    for i, c in enumerate(collections):
-        logger.info(
-            f"Loading collection `{c}` with at least "
-            f"{(fraction_available[i] * 100):2.1f}%% "
-            f"of genes available and at least {min_gene_count[i]} genes."
-        )
-
-        gene_sets = msigdb.load(c, id_type="symbols").gene_sets
-
-        if len(genes) > 0:
-            gene_sets = (
-                Pathways(gene_sets)
-                .subset(
-                    genes,
-                    fraction_available[i],
-                    min_gene_count[i],
-                    max_gene_count[i],
-                    keep,
-                )
-                .gene_sets
             )
+    return FeatureSets(feature_sets, name=name or Path(path).name, **kwargs)
 
-        size_dfs.append(
-            pd.DataFrame(
-                {
-                    "Name": [gs.name for gs in gene_sets],
-                    "Size": [len(gs.genes) for gs in gene_sets],
-                    "Collection": c,
-                }
+
+def from_dict(
+    d: Dict[str, Iterable[str]],
+    name: str = None,
+    **kwargs,
+) -> FeatureSets:
+    """Create a FeatureSets object from a dictionary.
+
+    Parameters
+    ----------
+    d : Dict[str, Iterable[str]]
+        Dictionary of feature sets.
+    name : str, optional
+        Name of the collection, by default None.
+
+    Returns
+    -------
+    FeatureSets
+    """
+    feature_sets = set()
+    for fs_name, features in d.items():
+        feature_sets.add(FeatureSet(features, name=fs_name))
+    return FeatureSets(feature_sets, name=name, **kwargs)
+
+
+def from_dataframe(
+    df: pd.DataFrame,
+    name: str = None,
+    name_col: str = "name",
+    features_col: str = "features",
+    desc_col: str = None,
+    **kwargs,
+) -> FeatureSets:
+    """Create a FeatureSets object from a DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame of feature sets.
+    name : str, optional
+        Name of the collection, by default None.
+    name_col : str, optional
+        Name of the column containing feature set names, by default "name".
+    features_col : str, optional
+        Name of the column containing feature set features, by default "features".
+    desc_col : str, optional
+        Name of the column containing feature set descriptions, by default None.
+
+    Returns
+    -------
+    FeatureSets
+    """
+    feature_sets = set()
+    for _, row in df.iterrows():
+        feature_sets.add(
+            FeatureSet(
+                row[features_col],
+                name=row[name_col],
+                description=desc_col is not None and row[desc_col],
             )
         )
-        all_gene_sets += gene_sets
-
-        logger.info(
-            f"Loaded {len(gene_sets)} pathways from collection `{c}` "
-            "with median size of "
-            f"{np.median([len(gs.genes) for gs in gene_sets])} genes",
-        )
-
-    pathways = Pathways(gene_sets=all_gene_sets)
-
-    for k, name in pathways.find_redundant().items():
-        remove += name[1:]
-
-    if len(remove) > 0:
-        logger.info(f"Removing following redundant pathways:\n{', '.join(remove)}")
-
-    pathways = pathways.remove(remove)
-    logger.info(
-        f"Loaded in total {len(pathways)} pathways with median size of "
-        f"{np.median([len(gs.genes) for gs in pathways.gene_sets])} genes",
-    )
-    return pathways, size_dfs
+    return FeatureSets(feature_sets, name=name, **kwargs)

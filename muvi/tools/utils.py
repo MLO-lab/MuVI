@@ -532,10 +532,10 @@ def test(
     i = 0
     for feature_set in tqdm(feature_sets.index.tolist()):
         i += 1
-        pathway_features = feature_sets.loc[feature_set, :]
+        fs_features = feature_sets.loc[feature_set, :]
 
-        features_in = factor_loadings.loc[:, pathway_features]
-        features_out = factor_loadings.loc[:, ~pathway_features]
+        features_in = factor_loadings.loc[:, fs_features]
+        features_out = factor_loadings.loc[:, ~fs_features]
 
         n_in = features_in.shape[1]
         n_out = features_out.shape[1]
@@ -550,7 +550,7 @@ def test(
 
         vif = 1.0
         if corr_adjust:
-            corr_df = y.loc[:, pathway_features].corr()
+            corr_df = y.loc[:, fs_features].corr()
             mean_corr = (np.nansum(corr_df.to_numpy()) - n_in) / (n_in * (n_in - 1))
             vif = 1 + (n_in - 1) * mean_corr
             df = y.shape[0] - 2

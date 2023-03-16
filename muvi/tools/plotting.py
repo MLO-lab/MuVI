@@ -330,6 +330,7 @@ def inspect_factor(
     view_idx="all",
     top=25,
     ranked=True,
+    figsize=None,
     show: bool = None,
     save: Union[bool, str, None] = None,
     **kwargs,
@@ -341,9 +342,10 @@ def inspect_factor(
     n_views = len(view_idx)
     n_factors = len(factor_idx)
 
-    fig, axs = plt.subplots(
-        n_factors, n_views, squeeze=False, figsize=(n_views * 8, n_factors * 8)
-    )
+    if figsize is None:
+        figsize = (8 * n_views, 8 * n_factors)
+
+    fig, axs = plt.subplots(n_factors, n_views, squeeze=False, figsize=figsize)
 
     for m in range(n_views):
         view_name = view_idx[m]

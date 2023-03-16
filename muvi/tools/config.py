@@ -9,7 +9,6 @@ except NameError:
 
 DATASET_DIR = os.path.join(BASE_DIR, "datasets")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
-MSIGDB_DIR = os.path.join(BASE_DIR, "msigdb")
 
 
 def generate_filename() -> str:

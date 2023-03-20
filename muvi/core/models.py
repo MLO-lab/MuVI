@@ -26,15 +26,24 @@ SingleView = Union[np.ndarray, pd.DataFrame]
 MultiView = Union[Dict[str, SingleView], List[SingleView]]
 
 
-class TensorDataset(Dataset):
-    def __init__(self, *tensors):
-        self.tensors = tensors
+class DictDataset(Dataset):
+    """Dictionary based PyTorch dataset."""
+
+    def __init__(self, tensor_dict, idx_key="sample_idx", **kwargs):
+        self.tensor_dict = tensor_dict
+        self.idx_key = idx_key
+        # just stores them
+        self.kwargs = kwargs
+        self._len = tensor_dict[next(iter(tensor_dict))].shape[0]
 
     def __len__(self):
-        return self.tensors[0].size(0)
+        return self._len
 
     def __getitem__(self, index):
-        return index, tuple(tensor[index] for tensor in self.tensors)
+        return {
+            **{self.idx_key: index},
+            **{k: v[index] for k, v in self.tensor_dict.items()},
+        }
 
 
 def _sigmoid(x):
@@ -616,7 +625,8 @@ class MuVI(PyroModule):
             vn: np.zeros((self.n_samples, self.n_features[vn]))
             for vn in _normalize_index(view_idx, self.view_names, as_idx=False)
         }
-        if factor_idx is not None:
+
+        if self.n_factors > 0:
             factor_scores = self.get_factor_scores(sample_idx, factor_idx)
             factor_loadings = self.get_factor_loadings(
                 view_idx, factor_idx, feature_idx
@@ -626,7 +636,7 @@ class MuVI(PyroModule):
                 for vn, obs in obs_hat.items()
             }
 
-        if cov_idx is not None:
+        if self.n_covariates > 0:
             covariates = self.get_covariates(sample_idx, cov_idx)
             cov_coefficients = self.get_covariate_coefficients(
                 view_idx, cov_idx, feature_idx
@@ -975,8 +985,9 @@ class MuVI(PyroModule):
 
         Returns
         -------
-        tuple
-            Tuple of (obs, mask, covs, prior_scales)
+        dict
+            Dictionary of training data,
+            same keys are expected as in the forward method of the MuVIModel
         """
         train_obs = torch.cat(
             [torch.Tensor(self.observations[vn]) for vn in self.view_names], 1
@@ -996,7 +1007,14 @@ class MuVI(PyroModule):
                 [torch.Tensor(self.prior_scales[vn]) for vn in self.view_names], 1
             )
 
-        return train_obs, mask_obs, train_covs, train_prior_scales
+        # make sure keys match the arguments in the forward method of the MuVIModel
+        training_data = {
+            "obs": train_obs,
+            "mask": mask_obs,
+            "covs": train_covs,
+            "prior_scales": train_prior_scales,
+        }
+        return {k: v for k, v in training_data.items() if v is not None}
 
     def fit(
         self,
@@ -1031,11 +1049,6 @@ class MuVI(PyroModule):
             Whether to log progress, by default 1
         seed : int, optional
             Training seed, by default None
-
-        Returns
-        -------
-        tuple
-            Tuple of (elbo history, whether training stopped early)
         """
 
         # if invalid or out of bounds set to n_samples
@@ -1053,23 +1066,16 @@ class MuVI(PyroModule):
         logger.info("Preparing SVI...")
         svi = self._setup_svi(opt, n_particles, scale=True)
         logger.info("Preparing training data...")
-        (
-            train_obs,
-            mask_obs,
-            train_covs,
-            train_prior_scales,
-        ) = self._setup_training_data()
-
-        if self._informed:
-            train_prior_scales = train_prior_scales.to(self.device)
+        training_data = self._setup_training_data()
+        training_prior_scales = training_data.pop("prior_scales", None)
+        if training_prior_scales is not None:
+            training_prior_scales = training_prior_scales.to(self.device)
 
         if batch_size < self.n_samples:
             logger.info(f"Using batches of size `{batch_size}`.")
-            tensors = (train_obs, mask_obs)
-            if self.covariates is not None:
-                tensors += (train_covs,)
+
             data_loader = DataLoader(
-                TensorDataset(*tensors),
+                DictDataset(training_data, idx_key="sample_idx"),
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=1,
@@ -1079,25 +1085,23 @@ class MuVI(PyroModule):
 
             def _step():
                 iteration_loss = 0
-                for _, (sample_idx, tensors) in enumerate(data_loader):
+                for _, tensor_dict in enumerate(data_loader):
                     iteration_loss += svi.step(
-                        sample_idx.to(self.device),
-                        *[tensor.to(self.device) for tensor in tensors],
-                        prior_scales=train_prior_scales,
+                        **{k: v.to(self.device) for k, v in tensor_dict.items()},
+                        prior_scales=training_prior_scales,
                     )
                 return iteration_loss
 
         else:
             logger.info("Using complete dataset.")
-            train_obs = train_obs.to(self.device)
-            mask_obs = mask_obs.to(self.device)
-
-            if train_covs is not None:
-                train_covs = train_covs.to(self.device)
+            # move all data to device once
+            training_data = {k: v.to(self.device) for k, v in training_data.items()}
 
             def _step():
                 return svi.step(
-                    None, train_obs, mask_obs, train_covs, train_prior_scales
+                    None,
+                    **training_data,
+                    prior_scales=training_prior_scales,
                 )
 
         if seed is not None:
@@ -1125,17 +1129,21 @@ class MuVI(PyroModule):
         if verbose > 0:
             pbar = tqdm(pbar)
             window_size = 5
-        for epoch_idx in pbar:
-            epoch_loss = _step()
-            history.append(epoch_loss)
-            if verbose > 0:
-                if epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1:
-                    pbar.set_postfix({"ELBO": epoch_loss})
-            if callbacks is not None:
-                # TODO: dont really like this, a bit sloppy
-                stop_early = any([callback(history) for callback in callbacks])
-                if stop_early:
-                    break
+
+        try:
+            for epoch_idx in pbar:
+                epoch_loss = _step()
+                history.append(epoch_loss)
+                if verbose > 0:
+                    if epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1:
+                        pbar.set_postfix({"ELBO": epoch_loss})
+                if callbacks is not None:
+                    # TODO: dont really like this, a bit sloppy
+                    stop_early = any([callback(history) for callback in callbacks])
+                    if stop_early:
+                        break
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt, stopping training and saving progress...")
 
         self._training_log = {
             "n_epochs": n_epochs,
@@ -1149,9 +1157,9 @@ class MuVI(PyroModule):
             "n_iter": len(history),
             "stop_early": stop_early,
         }
+        logger.info("Call `model._training_log` to inspect the training progress.")
         # reset cache in case it was initialized by any of the callbacks
         self._cache = None
-        return history, stop_early
 
 
 class MuVIModel(PyroModule):
@@ -1352,10 +1360,6 @@ class MuVIModel(PyroModule):
                     )
                 else:
                     y_dist = dist.Bernoulli(logits=y_loc[..., feature_idx])
-                    # y_dist = dist.RelaxedBernoulliStraightThrough(
-                    #     torch.ones_like(y_loc[..., feature_idx]) * 0.1,
-                    #     logits=y_loc[..., feature_idx],
-                    # )
 
                 with pyro.poutine.mask(mask=mask[..., feature_idx]):
                     ys.append(

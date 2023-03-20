@@ -174,18 +174,32 @@ class DataGenerator:
     def noisy_w_mask(self):
         return self._attr_to_matrix("noisy_w_masks")
 
-    def _generate_view_factor_mask(self, rng=None, n_comb=None):
-        if n_comb is not None:
+    def _generate_view_factor_mask(self, rng=None, all_combs=False):
+        if all_combs and self.n_views == 1:
             logger.warning(
-                "n_comb is not None, generating all possible "
-                f"binary combinations of {n_comb} variables"
+                "Single view dataset, "
+                "cannot generate factor combinations for a single view."
+            )
+            all_combs = False
+        if all_combs:
+            logger.warning(
+                f"Generating all possible binary combinations of "
+                f"{self.n_views} variables."
             )
             self.n_fully_shared_factors = 1
             self.n_private_factors = self.n_views
-            self.n_partially_shared_factors = 2**n_comb - 2 - self.n_private_factors
+            self.n_partially_shared_factors = (
+                2**self.n_views - 2 - self.n_private_factors
+            )
+            logger.warning(
+                f"New factor configuration: "
+                f"{self.n_fully_shared_factors} fully shared, "
+                f"{self.n_partially_shared_factors} partially shared, "
+                f"{self.n_private_factors} private factors."
+            )
 
             return np.array(
-                [list(i) for i in itertools.product([1, 0], repeat=n_comb)]
+                [list(i) for i in itertools.product([1, 0], repeat=self.n_views)]
             )[:-1, :].T
         if rng is None:
             rng = np.random.default_rng()
@@ -235,7 +249,7 @@ class DataGenerator:
         return 1.0 / (1 + np.exp(-x))
 
     def generate(
-        self, seed: int = None, n_comb: int = None, overwrite: bool = False
+        self, seed: int = None, all_combs: bool = False, overwrite: bool = False
     ) -> None:
         rng = np.random.default_rng()
 
@@ -249,7 +263,7 @@ class DataGenerator:
             )
             return rng
 
-        view_factor_mask = self._generate_view_factor_mask(rng, n_comb)
+        view_factor_mask = self._generate_view_factor_mask(rng, all_combs)
 
         n_active_factors = self.n_active_factors
         if n_active_factors <= 1.0:

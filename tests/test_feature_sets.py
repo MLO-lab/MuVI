@@ -1,4 +1,5 @@
 import numpy as np
+
 from muvi.tools.feature_sets import FeatureSet, FeatureSets
 
 

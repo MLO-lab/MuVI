@@ -500,6 +500,16 @@ class FeatureSets:
                     + "\n"
                 )
 
+    def to_dict(self) -> Dict[str, Iterable[str]]:
+        """Convert this feature set collection to a dictionary.
+
+        Returns
+        -------
+        Dict[str, Iterable[str]]
+            Dictionary of feature sets.
+        """
+        return {fs.name: fs.features for fs in self.feature_sets}
+
 
 def from_gmt(path: Path, name: str = None, **kwargs) -> FeatureSets:
     """Create a FeatureSets object from a GMT file.

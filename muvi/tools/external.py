@@ -1,5 +1,5 @@
 import logging
-import os
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -19,9 +19,10 @@ def save_as_hdf5(
             "Cannot save an untrained model, call `fit` first to train a MuVI model."
         )
 
-    if os.path.isfile(path):
+    path = Path(path)
+    if path.exists():
         logger.warning(f"`{path}` already exists, overwriting.")
-        os.remove(path)
+        # path.unlink()
 
     default_group_name = "group_0"
     logger.info(

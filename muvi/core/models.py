@@ -1,7 +1,7 @@
 import logging
-import os
 import pickle
 import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
@@ -60,6 +60,7 @@ class MuVI(PyroModule):
         n_factors: Optional[int] = None,
         view_names: Optional[List[str]] = None,
         likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
+        nmf: bool = False,
         use_gpu: bool = True,
     ):
         """MuVI module.
@@ -89,6 +90,9 @@ class MuVI(PyroModule):
             Likelihoods for each view,
             either "normal" or "bernoulli",
             by default None (all "normal")
+        nmf : bool, optional
+            Whether to use non-negative matrix factorization,
+            by default False
         use_gpu : bool, optional
             Whether to train on a GPU, by default True
         """
@@ -106,6 +110,7 @@ class MuVI(PyroModule):
             self.device = torch.device("cuda")
         self.to(self.device)
 
+        self.nmf = nmf
         self._model = None
         self._guide = None
         self._informed = self.prior_masks is not None
@@ -899,6 +904,7 @@ class MuVI(PyroModule):
                 n_factors=self.n_factors,
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
+                nmf=self.nmf,
                 device=self.device,
             )
             self._guide = MuVIGuide(self._model, device=self.device)
@@ -1172,7 +1178,8 @@ class MuVIModel(PyroModule):
         n_covariates: int,
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
-        device: bool = None,
+        nmf: bool = False,
+        device=None,
     ):
         """MuVI generative model.
 
@@ -1193,6 +1200,9 @@ class MuVIModel(PyroModule):
             either "normal" or "bernoulli", by default None
         global_prior_scale : float, optional
             Determine the level of global sparsity, by default 1.0
+        nmf : bool, optional
+            Whether to use non-negative matrix factorization,
+            by default False
         """
         super().__init__(name="MuVIModel")
         self.n_samples = n_samples
@@ -1207,6 +1217,10 @@ class MuVIModel(PyroModule):
         self.global_prior_scale = (
             1.0 if global_prior_scale is None else global_prior_scale
         )
+        self.nmf = nmf
+        # only needed if nmf is True
+        # self.pos_transform = torch.nn.Softplus(20)
+        self.pos_transform = torch.nn.ReLU()
 
         self.device = device
 
@@ -1319,6 +1333,9 @@ class MuVIModel(PyroModule):
                     ),
                 )
 
+                if self.nmf:
+                    output_dict["w"] = self.pos_transform(output_dict["w"])
+
             if self.n_covariates > 0:
                 with self.get_plate("covariate"):
                     output_dict["beta"] = pyro.sample(
@@ -1336,6 +1353,8 @@ class MuVIModel(PyroModule):
                 "z",
                 dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
             )
+            if self.nmf:
+                output_dict["z"] = self.pos_transform(output_dict["z"])
 
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
             if self.n_covariates > 0:
@@ -1347,7 +1366,6 @@ class MuVIModel(PyroModule):
                 likelihoods = [likelihoods[0]]
                 feature_offsets = [0, feature_offsets[-1]]
 
-            ys = []
             for view_idx, likelihood in enumerate(likelihoods):
                 feature_idx = slice(
                     feature_offsets[view_idx],
@@ -1362,13 +1380,11 @@ class MuVIModel(PyroModule):
                     y_dist = dist.Bernoulli(logits=y_loc[..., feature_idx])
 
                 with pyro.poutine.mask(mask=mask[..., feature_idx]):
-                    ys.append(
-                        pyro.sample(
-                            f"y_{view_idx}",
-                            y_dist,
-                            obs=obs[..., feature_idx],
-                            infer={"is_auxiliary": True},
-                        )
+                    output_dict[f"y_{view_idx}"] = pyro.sample(
+                        f"y_{view_idx}",
+                        y_dist,
+                        obs=obs[..., feature_idx],
+                        infer={"is_auxiliary": True},
                     )
 
         return output_dict
@@ -1478,7 +1494,10 @@ class MuVIGuide(PyroModule):
 
     @torch.no_grad()
     def _get_map_estimate(self, param_name: str, as_list: bool):
-        param = self.mode(param_name).cpu().detach().numpy()
+        param = self.mode(param_name)
+        if self.model.nmf and param_name in ["z", "w"]:
+            param = self.model.pos_transform(param)
+        param = param.cpu().detach().numpy()
         if param_name == "sigma":
             param = param[None, :]
 
@@ -1574,25 +1593,22 @@ class MuVIGuide(PyroModule):
 
 
 def save(model, dir_path="."):
-    model_path = os.path.join(dir_path, "model.pkl")
-    params_path = os.path.join(dir_path, "params.save")
-    if os.path.isfile(model_path):
+    model_path = Path(dir_path) / "model.pkl"
+    params_path = Path(dir_path) / "params.save"
+    if model_path.exists():
         logger.warning(f"`{model_path}` already exists, overwriting.")
-    if os.path.isfile(params_path):
+    if params_path.exists():
         logger.warning(f"`{params_path}` already exists, overwriting.")
-    os.makedirs(dir_path, exist_ok=True)
-    # if not os.path.isdir(os.path.dirname(dir_path)) and (
-    #     os.path.dirname(dir_path) != ""
-    # ):
-    #     os.makedirs(dir_path)
+
+    Path(dir_path).mkdir(parents=True, exist_ok=True)
     with open(model_path, "wb") as f:
         pickle.dump(model, f)
     pyro.get_param_store().save(params_path)
 
 
 def load(dir_path=".", with_params=True):
-    model_path = os.path.join(dir_path, "model.pkl")
-    params_path = os.path.join(dir_path, "params.save")
+    model_path = Path(dir_path) / "model.pkl"
+    params_path = Path(dir_path) / "params.save"
     with open(model_path, "rb") as f:
         model = pickle.load(f)
     if with_params:

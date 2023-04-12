@@ -1,10 +1,14 @@
-import os
-
-import numpy as np
+import torch
 
 
 def get_free_gpu_idx():
     """Get the index of the GPU with current lowest memory usage."""
-    os.system("nvidia-smi -q -d Memory |grep -A4 GPU|grep Used >tmp")
-    memory_available = [int(x.split()[2]) for x in open("tmp", "r").readlines()]
-    return np.argmin(memory_available)
+
+    max_free_idx = 0
+    max_free_mem = torch.cuda.mem_get_info(0)[0]
+    for i in range(torch.cuda.device_count()):
+        if torch.cuda.mem_get_info(i)[0] > max_free_mem:
+            max_free_idx = i
+            max_free_mem = torch.cuda.mem_get_info(i)[0]
+
+    return max_free_idx

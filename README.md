@@ -56,3 +56,15 @@ poetry install
 ## Getting started
 
 Check out [basic tutorial](examples/1_basic_tutorial.ipynb) to get familiar with MuVI!
+
+## Citation
+
+If you use `MuVI` in your work, please cite the following:
+
+> **Encoding Domain Knowledge in Multi-view Latent Variable Models: A Bayesian Approach with Structured Sparsity**
+>
+> Arber Qoku and Florian Buettner
+>
+> _International Conference on Artificial Intelligence and Statistics (AISTATS)_ 2023
+>
+> <https://proceedings.mlr.press/v206/qoku23a.html>

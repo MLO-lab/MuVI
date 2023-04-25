@@ -2,6 +2,10 @@
 
 A multi-view latent variable model with domain-informed structured sparsity, that integrates noisy domain expertise in terms of feature sets.
 
+## Quick links
+
+[Examples](examples/1_basic_tutorial.ipynb) | [Paper](https://proceedings.mlr.press/v206/qoku23a/qoku23a.pdf) | [BibTeX](citation.bib)
+
 ## Setup
 
 We suggest using [conda](https://docs.conda.io/en/latest/miniconda.html) to manage your environments, and either [pip](https://pypi.org/project/pip/) or [poetry](https://python-poetry.org/) to install `muvi` as a python package. Follow these steps to get `muvi` up and running!
@@ -59,7 +63,7 @@ Check out [basic tutorial](examples/1_basic_tutorial.ipynb) to get familiar with
 
 ## Citation
 
-If you use `MuVI` in your work, please cite the following:
+If you use `MuVI` in your work, please use this [BibTeX](citation.bib) entry:
 
 > **Encoding Domain Knowledge in Multi-view Latent Variable Models: A Bayesian Approach with Structured Sparsity**
 >

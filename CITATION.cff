@@ -7,10 +7,12 @@ authors:
   given-names: "Florian"
 title: "Encoding Domain Knowledge in Multi-view Latent Variable Models: A Bayesian Approach with Structured Sparsity"
 date-released: 2023-04-13
-type: "article-conference"
-container-title: "Proceedings of The 26th International Conference on Artificial Intelligence and Statistics"
+type: article
+series: "Proceedings of Machine Learning Research"
+conference:
+  name: "The 26th International Conference on Artificial Intelligence and Statistics"
+  url: "https://www.aistats.org/"
 volume: 206
-issue: ''
 page: "11545-11562"
 publisher: "PMLR"
 url: "https://proceedings.mlr.press/v206/qoku23a.html"

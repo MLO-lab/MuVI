@@ -1,10 +1,10 @@
 cff-version: 1.2.0
 message: If you use this work, please cite it using the following BibTeX entry.
 authors:
-  - family-names: Qoku
-    given-names: Arber
-  - family-names: Buettner
-    given-names: Florian
+- family-names: Qoku
+  given-names: Arber
+- family-names: Buettner
+  given-names: Florian
 title: Encoding Domain Knowledge in Multi-view Latent Variable Models: A Bayesian Approach with Structured Sparsity
 year: 2023
 month: 4

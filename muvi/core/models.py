@@ -606,7 +606,7 @@ class MuVI(PyroModule):
             return (param > 0.5).astype(np.int32)
         return param
 
-    def get_predicted(
+    def get_reconstructed(
         self,
         view_idx: Index = "all",
         sample_idx: Index = "all",
@@ -615,7 +615,7 @@ class MuVI(PyroModule):
         cov_idx: Index = "all",
         as_df: bool = False,
     ):
-        """Get predicted observations.
+        """Get reconstructed observations.
 
         Parameters
         ----------
@@ -706,7 +706,7 @@ class MuVI(PyroModule):
         """
 
         obs = self.get_observations(view_idx, sample_idx, feature_idx, as_df=True)
-        obs_hat = self.get_predicted(view_idx, sample_idx, feature_idx, as_df=True)
+        obs_hat = self.get_reconstructed(view_idx, sample_idx, feature_idx, as_df=True)
         obs_imputed = {vn: obs[vn].fillna(obs_hat[vn]) for vn in obs.keys()}
 
         if not as_df:

@@ -46,10 +46,6 @@ class DictDataset(Dataset):
         }
 
 
-def _sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
 class MuVI(PyroModule):
     def __init__(
         self,
@@ -60,6 +56,7 @@ class MuVI(PyroModule):
         n_factors: Optional[int] = None,
         view_names: Optional[List[str]] = None,
         likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
+        reg_hs: bool = True,
         nmf: bool = False,
         use_gpu: bool = True,
     ):
@@ -90,6 +87,10 @@ class MuVI(PyroModule):
             Likelihoods for each view,
             either "normal" or "bernoulli",
             by default None (all "normal")
+        reg_hs : bool, optional
+            Whether to use the regularized version of HS,
+            by default True,
+            only relevant when NOT using informative priors
         nmf : bool, optional
             Whether to use non-negative matrix factorization,
             by default False
@@ -110,10 +111,17 @@ class MuVI(PyroModule):
             self.device = torch.device("cuda")
         self.to(self.device)
 
+        self.reg_hs = reg_hs
+        self._informed = self.prior_masks is not None
+        if not self.reg_hs and self._informed:
+            logger.warning(
+                "Informative priors require regularized horseshoe, "
+                "setting `reg_hs` to True."
+            )
+            self.reg_hs = True
         self.nmf = nmf
         self._model = None
         self._guide = None
-        self._informed = self.prior_masks is not None
         self._built = False
         self._trained = False
         self._training_log = {}
@@ -593,6 +601,11 @@ class MuVI(PyroModule):
             as_df=as_df,
         )
 
+    def _mode(self, param, likelihood):
+        if likelihood == "bernoulli":
+            return (param > 0.5).astype(np.int32)
+        return param
+
     def get_predicted(
         self,
         view_idx: Index = "all",
@@ -652,9 +665,7 @@ class MuVI(PyroModule):
             }
 
         for vn in obs_hat.keys():
-            if self.likelihoods[vn] == "bernoulli":
-                obs_hat[vn] = _sigmoid(obs_hat[vn])
-                # obs_hat[vn] = np.rint(obs_hat[vn])
+            obs_hat[vn] = self._mode(obs_hat[vn], self.likelihoods[vn])
 
         if as_df:
             obs_hat = {
@@ -904,6 +915,7 @@ class MuVI(PyroModule):
                 n_factors=self.n_factors,
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
+                reg_hs=self.reg_hs,
                 nmf=self.nmf,
                 device=self.device,
             )
@@ -1178,6 +1190,7 @@ class MuVIModel(PyroModule):
         n_covariates: int,
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
+        reg_hs: bool = True,
         nmf: bool = False,
         device=None,
     ):
@@ -1200,6 +1213,9 @@ class MuVIModel(PyroModule):
             either "normal" or "bernoulli", by default None
         global_prior_scale : float, optional
             Determine the level of global sparsity, by default 1.0
+        reg_hs : bool, optional
+            Whether to use the regularized version of HS,
+            by default True
         nmf : bool, optional
             Whether to use non-negative matrix factorization,
             by default False
@@ -1217,6 +1233,7 @@ class MuVIModel(PyroModule):
         self.global_prior_scale = (
             1.0 if global_prior_scale is None else global_prior_scale
         )
+        self.reg_hs = reg_hs
         self.nmf = nmf
         # only needed if nmf is True
         # self.pos_transform = torch.nn.Softplus(20)
@@ -1303,13 +1320,7 @@ class MuVIModel(PyroModule):
                     "local_scale",
                     dist.HalfCauchy(self._ones(1)),
                 )
-                output_dict["caux"] = pyro.sample(
-                    "caux",
-                    dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
-                )
-                slab_scale = 1.0 if prior_scales is None else prior_scales
-                c = slab_scale * torch.sqrt(output_dict["caux"])
-                lmbda = torch.cat(
+                w_scale = torch.cat(
                     [
                         (
                             output_dict["local_scale"][
@@ -1324,12 +1335,22 @@ class MuVIModel(PyroModule):
                     -1,
                 )
 
+                if self.reg_hs:
+                    slab_scale = 1.0 if prior_scales is None else prior_scales
+                    output_dict["caux"] = pyro.sample(
+                        "caux",
+                        dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
+                    )
+                    c = slab_scale * torch.sqrt(output_dict["caux"])
+                    w_scale = (self.global_prior_scale * c * w_scale) / torch.sqrt(
+                        c**2 + w_scale**2
+                    )
+
                 output_dict["w"] = pyro.sample(
                     "w",
                     dist.Normal(
                         self._zeros(1),
-                        (self.global_prior_scale * c * lmbda)
-                        / torch.sqrt(c**2 + lmbda**2),
+                        w_scale,
                     ),
                 )
 
@@ -1542,11 +1563,21 @@ class MuVIGuide(PyroModule):
         """Get the beta coefficients."""
         return self._get_map_estimate("beta", as_list=as_list)
 
-    def _sample_normal(self, name: str):
-        return pyro.sample(name, dist.Normal(*self._get_loc_and_scale(name)))
+    def _sample_normal(self, name: str, index=None):
+        # duplicate code below, might update later
+        loc, scale = self._get_loc_and_scale(name)
+        if index is not None:
+            # indices = indices.to(self.device)
+            loc = loc.index_select(0, index)
+            scale = scale.index_select(0, index)
+        return pyro.sample(name, dist.Normal(loc, scale))
 
-    def _sample_log_normal(self, name: str):
-        return pyro.sample(name, dist.LogNormal(*self._get_loc_and_scale(name)))
+    def _sample_log_normal(self, name: str, index=None):
+        loc, scale = self._get_loc_and_scale(name)
+        if index is not None:
+            loc = loc.index_select(0, index)
+            scale = scale.index_select(0, index)
+        return pyro.sample(name, dist.LogNormal(loc, scale))
 
     def forward(
         self,
@@ -1572,7 +1603,8 @@ class MuVIGuide(PyroModule):
         with feature_plate:
             with factor_plate:
                 output_dict["local_scale"] = self._sample_log_normal("local_scale")
-                output_dict["caux"] = self._sample_log_normal("caux")
+                if self.model.reg_hs:
+                    output_dict["caux"] = self._sample_log_normal("caux")
                 output_dict["w"] = self._sample_normal("w")
 
             if self.model.n_covariates > 0:
@@ -1582,13 +1614,7 @@ class MuVIGuide(PyroModule):
             output_dict["sigma"] = self._sample_log_normal("sigma")
 
         with sample_plate as indices:
-            z_loc, z_scale = self._get_loc_and_scale("z")
-            if indices is not None:
-                # indices = indices.to(self.device)
-                z_loc = z_loc.index_select(0, indices)
-                z_scale = z_scale.index_select(0, indices)
-            output_dict["z"] = pyro.sample("z", dist.Normal(z_loc, z_scale))
-            # output_dict["z"] = self._sample_normal("z")
+            output_dict["z"] = self._sample_normal("z", indices)
         return output_dict
 
 

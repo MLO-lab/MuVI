@@ -119,10 +119,6 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
     return _filter_factors(model, factor_subset)
 
 
-def _sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
 def _recon_error(
     model,
     view_idx,
@@ -221,9 +217,7 @@ def _recon_error(
         y_true_view = ys[vn]
         y_pred_view = np.zeros_like(y_true_view)
         if n_factors > 0:
-            y_pred_view += z @ ws[vn]
-            if model.likelihoods[vn] == "bernoulli":
-                y_pred_view = _sigmoid(y_pred_view)
+            y_pred_view += model._mode(z @ ws[vn], model.likelihoods[vn])
         if n_covariates > 0:
             y_pred_view += x @ betas[vn]
         view_scores[vn] = metric_fn(y_true_view, y_pred_view)
@@ -232,15 +226,15 @@ def _recon_error(
         cov_scores[score_key] = np.zeros(n_covariates)
         if factor_wise:
             for k in range(n_factors):
-                y_pred_fac_k = np.outer(z[:, k], ws[vn][k, :])
-                if model.likelihoods[vn] == "bernoulli":
-                    y_pred_fac_k = _sigmoid(y_pred_fac_k)
+                y_pred_fac_k = model._mode(
+                    np.outer(z[:, k], ws[vn][k, :]), model.likelihoods[vn]
+                )
                 factor_scores[score_key][k] = metric_fn(y_true_view, y_pred_fac_k)
         if cov_wise:
             for k in range(n_covariates):
-                y_pred_cov_k = np.outer(x[:, k], betas[vn][k, :])
-                if model.likelihoods[vn] == "bernoulli":
-                    y_pred_cov_k = _sigmoid(y_pred_cov_k)
+                y_pred_cov_k = model._mode(
+                    np.outer(x[:, k], betas[vn][k, :]), model.likelihoods[vn]
+                )
                 cov_scores[score_key][k] = metric_fn(y_true_view, y_pred_cov_k)
 
     factor_scores = pd.DataFrame(
@@ -663,7 +657,7 @@ def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **k
     observations = {
         view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
     }
-    prior_masks = {}
+    prior_masks = None
     if prior_mask_key is not None:
         for view_name in view_names:
             if prior_mask_key in mdata.mod[view_name].varm:

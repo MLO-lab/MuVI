@@ -17,7 +17,7 @@ class FeatureSet:
         self,
         features: Collection[str],
         name: str,
-        description: str = None,
+        description: str = "",
     ):
         self.name = name
         self.features = frozenset(features)

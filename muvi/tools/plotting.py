@@ -383,7 +383,7 @@ def inspect_factor(
                     loading_col: factor_loadings,
                     abs_loading_col: factor_loadings_abs,
                     rank_col: factor_loadings_rank,
-                    "FP": ~factor_mask & factor_loadings_abs > 0.05,
+                    "FP": ~factor_mask & factor_loadings_abs > 0.0,
                 }
             )
 

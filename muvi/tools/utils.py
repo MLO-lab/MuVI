@@ -1,10 +1,13 @@
 import logging
+from pathlib import Path
 from typing import List, Union
 
 import anndata as ad
+import dill as pickle
 import mudata as md
 import numpy as np
 import pandas as pd
+import pyro
 import scanpy as sc
 import scipy
 from scipy.optimize import linprog
@@ -652,12 +655,28 @@ def dendrogram(model, groupby, **kwargs):
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
 
 
+def from_adata(adata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
+    observations = [adata.to_df().copy()]
+    prior_masks = None
+    if prior_mask_key is not None:
+        if prior_mask_key in adata.varm:
+            prior_masks = [adata.varm[prior_mask_key].T.copy()]
+        else:
+            logger.warning("No prior information found.")
+
+    covariates = None
+    if covariate_key is not None:
+        covariates = adata.obsm[covariate_key].copy()
+
+    return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
+
+
 def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
     view_names = sorted(mdata.mod.keys())
     observations = {
         view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
     }
-    prior_masks = None
+    prior_masks = {}
     if prior_mask_key is not None:
         for view_name in view_names:
             if prior_mask_key in mdata.mod[view_name].varm:
@@ -666,6 +685,9 @@ def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **k
                 )
             else:
                 logger.warning(f"No prior information found for `{view_name}`.")
+
+    if len(prior_masks) == 0:
+        prior_masks = None
 
     covariates = None
     if covariate_key is not None:
@@ -713,6 +735,84 @@ def to_mdata(
         mdata.obsm[covariates_key] = model.get_covariates(as_df=True)
 
     return mdata
+
+
+def save(model, dir_path="."):
+    model_path = Path(dir_path) / "model.pkl"
+    params_path = Path(dir_path) / "params.save"
+    factor_adata_path = Path(dir_path) / "factor.h5ad"
+    cov_adata_path = Path(dir_path) / "cov.h5ad"
+    for pth in [model_path, params_path, factor_adata_path, cov_adata_path]:
+        if pth.exists():
+            logger.warning(f"`{pth}` already exists, overwriting.")
+
+    Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+    factor_adata = None
+    cov_adata = None
+    # clear cache
+    if model._cache is not None:
+        factor_adata = model._cache.factor_adata
+        cov_adata = model._cache.cov_adata
+        model._cache.factor_adata = None
+        model._cache.cov_adata = None
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+
+    # fixes error of anndata that renames .obsm index
+    for adata in [factor_adata, cov_adata]:
+        if adata is not None:
+            for key in adata.obsm.keys():
+                if isinstance(adata.obsm[key], pd.DataFrame):
+                    adata.obsm[key].index = adata.obs_names.copy()
+
+    # save adata(s) and restore cache
+    try:
+        if factor_adata is not None:
+            factor_adata.write_h5ad(factor_adata_path)
+    except Exception as e:
+        logger.error(e)
+    finally:
+        if model._cache is not None:
+            model._cache.factor_adata = factor_adata
+
+    try:
+        if cov_adata is not None:
+            cov_adata.write_h5ad(cov_adata_path)
+    except Exception as e:
+        logger.error(e)
+    finally:
+        if model._cache is not None:
+            model._cache.cov_adata = cov_adata
+
+    pyro.get_param_store().save(params_path)
+    return dir_path
+
+
+def load(dir_path=".", with_params=True):
+    model_path = Path(dir_path) / "model.pkl"
+    params_path = Path(dir_path) / "params.save"
+    factor_adata_path = Path(dir_path) / "factor.h5ad"
+    cov_adata_path = Path(dir_path) / "cov.h5ad"
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
+
+    if model._cache is not None:
+        factor_adata = None
+        cov_adata = None
+
+        if factor_adata_path.exists():
+            factor_adata = sc.read_h5ad(factor_adata_path)
+        if cov_adata_path.exists():
+            cov_adata = sc.read_h5ad(cov_adata_path)
+
+        model._cache.factor_adata = factor_adata
+        model._cache.cov_adata = cov_adata
+    if with_params:
+        pyro.get_param_store().load(params_path)
+    # model = pyro.module("MuVI", model, update_module_params=True)
+    return model
 
 
 def optim_perm(A):

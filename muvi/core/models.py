@@ -1,7 +1,5 @@
 import logging
-import pickle
 import time
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
@@ -148,10 +146,6 @@ class MuVI(PyroModule):
         return idx
 
     def _setup_views(self, observations, view_names):
-        n_views = len(observations)
-        if n_views == 1:
-            logger.warning("Running MuVI on a single view.")
-
         if view_names is None:
             logger.warning("No view names provided!")
             if isinstance(observations, list):
@@ -159,7 +153,7 @@ class MuVI(PyroModule):
                     "Setting the name of each view to `view_idx` "
                     "for list observations."
                 )
-                view_names = [f"view_{m}" for m in range(n_views)]
+                view_names = [f"view_{m}" for m in range(len(observations))]
             if isinstance(observations, dict):
                 logger.info(
                     "Setting the view names to the sorted list "
@@ -167,17 +161,35 @@ class MuVI(PyroModule):
                 )
                 view_names = sorted(observations.keys())
 
-        if n_views > len(view_names):
+        # if list convert to dict
+        if isinstance(observations, list):
+            observations = dict(zip(view_names, observations))
+
+        _view_names = []
+        for vn in view_names:
+            if vn not in observations.keys():
+                logger.warning(f"View `{vn}` not found in observations, skipping.")
+            else:
+                _view_names.append(vn)
+        view_names = _view_names
+        if len(view_names) == 0:
+            raise ValueError(
+                "No views found, check if `view_names` matches the dictionary keys!"
+            )
+
+        if len(view_names) < len(observations):
             logger.warning(
                 "Number of views is larger than the length of `view_names`, "
                 "using only the subset of views defined in `view_names`."
             )
-            n_views = len(view_names)
+
+        observations = {vn: observations[vn] for vn in view_names}
+
+        n_views = len(observations)
+        if n_views == 1:
+            logger.warning("Running MuVI on a single view.")
 
         view_names = pd.Index(view_names)
-        # if list convert to dict
-        if isinstance(observations, list):
-            observations = dict(zip(view_names, observations))
 
         self.n_views = n_views
         self.view_names = self._validate_index(view_names)
@@ -276,7 +288,7 @@ class MuVI(PyroModule):
         }
 
     def _setup_prior_masks(self, masks, confidence, n_factors):
-        informed = masks is not None
+        informed = masks is not None and len(masks) > 0
         valid_n_factors = n_factors is not None and n_factors > 0
         if not informed and not valid_n_factors:
             raise ValueError(
@@ -1616,28 +1628,3 @@ class MuVIGuide(PyroModule):
         with sample_plate as indices:
             output_dict["z"] = self._sample_normal("z", indices)
         return output_dict
-
-
-def save(model, dir_path="."):
-    model_path = Path(dir_path) / "model.pkl"
-    params_path = Path(dir_path) / "params.save"
-    if model_path.exists():
-        logger.warning(f"`{model_path}` already exists, overwriting.")
-    if params_path.exists():
-        logger.warning(f"`{params_path}` already exists, overwriting.")
-
-    Path(dir_path).mkdir(parents=True, exist_ok=True)
-    with open(model_path, "wb") as f:
-        pickle.dump(model, f)
-    pyro.get_param_store().save(params_path)
-
-
-def load(dir_path=".", with_params=True):
-    model_path = Path(dir_path) / "model.pkl"
-    params_path = Path(dir_path) / "params.save"
-    with open(model_path, "rb") as f:
-        model = pickle.load(f)
-    if with_params:
-        pyro.get_param_store().load(params_path)
-    # model = pyro.module("MuVI", model, update_module_params=True)
-    return model

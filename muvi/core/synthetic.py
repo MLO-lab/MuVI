@@ -4,6 +4,8 @@ import logging
 import math
 from typing import List, Tuple
 
+import anndata as ad
+import mudata as mu
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -18,10 +20,12 @@ class DataGenerator:
         n_fully_shared_factors: int = 2,
         n_partially_shared_factors: int = 15,
         n_private_factors: int = 3,
-        n_covariates: int = 0,
         factor_size_params: Tuple[float] = None,
         factor_size_dist: str = "uniform",
         n_active_factors: float = 1.0,
+        n_covariates: int = 0,
+        n_response: int = 0,
+        nmf: bool = False,
         **kwargs,
     ) -> None:
         """Generate synthetic data
@@ -40,8 +44,6 @@ class DataGenerator:
             Number of partially shared latent factors, by default 15
         n_private_factors : int, optional
             Number of private latent factors, by default 3
-        n_covariates : int, optional
-            Number of observed covariates, by default 0
         factor_size_params : Tuple[float], optional
             Parameters for the distribution of the number
             of active factor loadings for the latent factors,
@@ -52,6 +54,13 @@ class DataGenerator:
             by default "uniform"
         n_active_factors : float, optional
             Number or fraction of active factors, by default 1.0 (all)
+        n_covariates : int, optional
+            Number of observed covariates, by default 0
+        n_response : int, optional
+            Number of response variables from the latent factors, by default 0
+        nmf : bool, optional
+            Whether to generate data from a non-negative matrix factorization,
+            by default False
         """
 
         self.n_samples = n_samples
@@ -61,6 +70,8 @@ class DataGenerator:
         self.n_partially_shared_factors = n_partially_shared_factors
         self.n_private_factors = n_private_factors
         self.n_covariates = n_covariates
+        self.n_response = n_response
+        self.nmf = nmf
 
         if factor_size_params is None:
             if factor_size_dist == "uniform":
@@ -106,6 +117,10 @@ class DataGenerator:
         self.view_factor_mask = None
         # set when introducing missingness
         self.presence_masks = None
+
+        self.response_w = None
+        self.response_sigma = None
+        self.response = None
 
     @property
     def n_factors(self):
@@ -281,8 +296,15 @@ class DataGenerator:
         # generate factor scores which lie in the latent space
         z = rng.standard_normal((self.n_samples, self.n_factors))
 
+        if self.nmf:
+            z = np.abs(z)
+            # z *= z > 0
+
         if self.n_covariates > 0:
             x = rng.standard_normal((self.n_samples, self.n_covariates))
+            if self.nmf:
+                x = np.abs(x)
+                # x *= x > 0
 
         betas = []
         ws = []
@@ -317,12 +339,16 @@ class DataGenerator:
             # set small values to zero
             tiny_w_threshold = 0.1
             w_mask[np.abs(w) < tiny_w_threshold] = 0.0
-            w = w_mask * w
+            w_mask = w_mask.astype(bool)
             # add some noise to avoid exactly zero values
-            w = np.where(
-                np.abs(w) < tiny_w_threshold, w + rng.standard_normal(w_shape) / 100, w
-            )
-            assert ((np.abs(w) > tiny_w_threshold) * 1.0 == w_mask).all()
+            w = np.where(w_mask, w, rng.standard_normal(w_shape) / 100)
+            assert ((np.abs(w) > tiny_w_threshold) == w_mask).all()
+
+            if self.nmf:
+                w = np.abs(w)
+                # w *= w > 0
+                # # update mask
+                # w_mask[np.abs(w) < tiny_w_threshold] = 0.0
 
             y_loc = np.matmul(z, w)
 
@@ -330,6 +356,9 @@ class DataGenerator:
                 beta_shape = (self.n_covariates, n_features)
                 # reduce effect of betas by scaling them down
                 beta = rng.standard_normal(beta_shape) / 10
+                if self.nmf:
+                    beta = np.abs(beta)
+                    # beta *= beta > 0
                 y_loc = y_loc + np.matmul(x, beta)
                 betas.append(beta)
 
@@ -338,8 +367,16 @@ class DataGenerator:
 
             if self.likelihoods[m] == "normal":
                 y = rng.normal(loc=y_loc, scale=sigma)
-            else:
+                if self.nmf:
+                    y = np.abs(y)
+                    # y *= y > 0
+            elif self.likelihoods[m] == "bernoulli":
                 y = rng.binomial(1, self.sigmoid(y_loc))
+            elif self.likelihoods[m] == "poisson":
+                # rate = np.log1p(np.exp(-np.abs(y_loc))) + np.maximum(y_loc, 0)
+                # rate = y_loc * (y_loc > 0)
+                rate = np.exp(y_loc)
+                y = rng.poisson(rate)
 
             ws.append(w)
             sigmas.append(sigma)
@@ -349,6 +386,7 @@ class DataGenerator:
         if self.n_covariates > 0:
             self.x = x
             self.betas = betas
+
         self.z = z
         self.ws = ws
         self.w_masks = w_masks
@@ -356,6 +394,13 @@ class DataGenerator:
         self.ys = ys
         self.active_factor_indices = active_factor_indices
         self.view_factor_mask = view_factor_mask
+
+        if self.n_response > 0:
+            self.response_w = rng.standard_normal((self.n_factors, self.n_response))
+            self.response_sigma = 1.0 / np.sqrt(rng.gamma(10.0, 1.0, self.n_response))
+            self.response = rng.normal(
+                loc=np.matmul(z, self.response_w), scale=self.response_sigma
+            )
 
         return rng
 
@@ -534,3 +579,26 @@ class DataGenerator:
         self.active_factor_indices = np.array(
             self.active_factor_indices[np.array(new_factor_order)], copy=True
         )
+
+    def to_mdata(self) -> mu.MuData:
+        view_names = []
+        ad_dict = {}
+        for m in range(self.n_views):
+            adata = ad.AnnData(
+                self.ys[m],
+                dtype=np.float32,
+            )
+            adata.var_names = f"feature_group_{m}:" + adata.var_names
+            adata.varm["w"] = self.ws[m].T
+            adata.varm["w_mask"] = self.w_masks[m].T
+            view_name = f"feature_group_{m}"
+            ad_dict[view_name] = adata
+            view_names.append(view_name)
+
+        mdata = mu.MuData(ad_dict)
+        mdata.uns["likelihoods"] = dict(zip(view_names, self.likelihoods))
+        mdata.uns["n_active_factors"] = self.n_active_factors
+        mdata.obsm["x"] = self.x
+        mdata.obsm["z"] = self.z
+
+        return mdata

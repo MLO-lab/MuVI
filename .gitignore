@@ -6,8 +6,10 @@
 .history/
 
 # Misc folders
+backup/
 results/
 figures/
+examples_dev/
 projects/
 logs/
 datasets/

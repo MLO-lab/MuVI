@@ -25,7 +25,7 @@ class DataGenerator:
         n_active_factors: float = 1.0,
         n_covariates: int = 0,
         n_response: int = 0,
-        nmf: bool = False,
+        nmf: List[bool] = None,
         **kwargs,
     ) -> None:
         """Generate synthetic data
@@ -58,7 +58,7 @@ class DataGenerator:
             Number of observed covariates, by default 0
         n_response : int, optional
             Number of response variables from the latent factors, by default 0
-        nmf : bool, optional
+        nmf : List[bool], optional
             Whether to generate data from a non-negative matrix factorization,
             by default False
         """
@@ -71,7 +71,6 @@ class DataGenerator:
         self.n_private_factors = n_private_factors
         self.n_covariates = n_covariates
         self.n_response = n_response
-        self.nmf = nmf
 
         if factor_size_params is None:
             if factor_size_dist == "uniform":
@@ -99,6 +98,10 @@ class DataGenerator:
         self.likelihoods = likelihoods
 
         self.n_active_factors = n_active_factors
+
+        if nmf is None:
+            nmf = [False for _ in range(self.n_views)]
+        self.nmf = nmf
 
         # set upon data generation
         # covariates
@@ -296,13 +299,13 @@ class DataGenerator:
         # generate factor scores which lie in the latent space
         z = rng.standard_normal((self.n_samples, self.n_factors))
 
-        if self.nmf:
+        if any(self.nmf):
             z = np.abs(z)
             # z *= z > 0
 
         if self.n_covariates > 0:
             x = rng.standard_normal((self.n_samples, self.n_covariates))
-            if self.nmf:
+            if any(self.nmf):
                 x = np.abs(x)
                 # x *= x > 0
 
@@ -344,7 +347,7 @@ class DataGenerator:
             w = np.where(w_mask, w, rng.standard_normal(w_shape) / 100)
             assert ((np.abs(w) > tiny_w_threshold) == w_mask).all()
 
-            if self.nmf:
+            if self.nmf[m]:
                 w = np.abs(w)
                 # w *= w > 0
                 # # update mask
@@ -356,7 +359,7 @@ class DataGenerator:
                 beta_shape = (self.n_covariates, n_features)
                 # reduce effect of betas by scaling them down
                 beta = rng.standard_normal(beta_shape) / 10
-                if self.nmf:
+                if self.nmf[m]:
                     beta = np.abs(beta)
                     # beta *= beta > 0
                 y_loc = y_loc + np.matmul(x, beta)
@@ -367,7 +370,7 @@ class DataGenerator:
 
             if self.likelihoods[m] == "normal":
                 y = rng.normal(loc=y_loc, scale=sigma)
-                if self.nmf:
+                if self.nmf[m]:
                     y = np.abs(y)
                     # y *= y > 0
             elif self.likelihoods[m] == "bernoulli":

@@ -55,7 +55,7 @@ class MuVI(PyroModule):
         view_names: Optional[List[str]] = None,
         likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
         reg_hs: bool = True,
-        nmf: bool = False,
+        nmf: Optional[Union[Dict[str, bool], List[bool]]] = None,
         use_gpu: bool = True,
     ):
         """MuVI module.
@@ -89,7 +89,7 @@ class MuVI(PyroModule):
             Whether to use the regularized version of HS,
             by default True,
             only relevant when NOT using informative priors
-        nmf : bool, optional
+        nmf : Union[Dict[str, bool], List[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
         use_gpu : bool, optional
@@ -102,6 +102,7 @@ class MuVI(PyroModule):
         )
         self.covariates = self._setup_covariates(covariates)
         self.likelihoods = self._setup_likelihoods(likelihoods)
+        self.nmf = self._setup_nmf(nmf)
 
         self.device = torch.device("cpu")
         if use_gpu and torch.cuda.is_available():
@@ -117,7 +118,6 @@ class MuVI(PyroModule):
                 "setting `reg_hs` to True."
             )
             self.reg_hs = True
-        self.nmf = nmf
         self._model = None
         self._guide = None
         self._built = False
@@ -128,7 +128,9 @@ class MuVI(PyroModule):
     @property
     def _factor_signs(self):
         signs = 1.0
-        if self._trained:
+        # only compute signs if model is trained
+        # and there is no nmf constraint
+        if self._trained and not any(self.nmf.values()):
             w = self._guide.get_w()
             # TODO: looking at top loadings works better than including all
             # 100 feels a bit arbitrary though
@@ -359,13 +361,15 @@ class MuVI(PyroModule):
                 logger.info(
                     f"Mask for view `{vn}` not found, assuming `{vn}` to be uninformed."
                 )
-                masks[vn] = np.zeros((n_factors, self.n_features[vn]))
+                masks[vn] = np.zeros((n_prior_factors, self.n_features[vn])).astype(
+                    bool
+                )
                 continue
             view_mask = masks[vn]
-            if view_mask.shape[0] != n_factors - n_dense_factors:
+            if view_mask.shape[0] != n_prior_factors:
                 raise ValueError(
                     f"Mask `{vn}` has {view_mask.shape[0]} factors "
-                    f"instead of {n_factors - n_dense_factors}, "
+                    f"instead of {n_prior_factors}, "
                     "all masks must have the same number of factors."
                 )
             if view_mask.shape[1] != self.n_features[vn]:
@@ -401,7 +405,7 @@ class MuVI(PyroModule):
                     masks[vn] = view_mask.loc[:, self.feature_names[vn]]
 
         if factor_names is None:
-            factor_names = [f"factor_{k}" for k in range(n_factors)]
+            factor_names = [f"factor_{k}" for k in range(n_prior_factors)]
         if n_dense_factors > 0:
             factor_names = list(factor_names) + [
                 f"dense_{k}" for k in range(n_dense_factors)
@@ -437,10 +441,19 @@ class MuVI(PyroModule):
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
         if isinstance(likelihoods, list):
-            likelihoods = {self.view_names[i]: ll for i, ll in enumerate(likelihoods)}
+            likelihoods = {self.view_names[m]: ll for m, ll in enumerate(likelihoods)}
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
         logger.info(f"Likelihoods set to `{likelihoods}`.")
         return likelihoods
+
+    def _setup_nmf(self, nmf):
+        if nmf is None:
+            nmf = [False for _ in range(self.n_views)]
+        if isinstance(nmf, list):
+            nmf = {self.view_names[m]: _nmf for m, _nmf in enumerate(nmf)}
+        nmf = {vn: nmf.get(vn, False) for vn in self.view_names}
+        logger.info(f"NMF set to `{nmf}`.")
+        return nmf
 
     def _setup_covariates(self, covariates):
         n_covariates = 0
@@ -928,7 +941,7 @@ class MuVI(PyroModule):
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
-                nmf=self.nmf,
+                nmf=[self.nmf[vn] for vn in self.view_names],
                 device=self.device,
             )
             self._guide = MuVIGuide(self._model, device=self.device)
@@ -1203,7 +1216,7 @@ class MuVIModel(PyroModule):
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
         reg_hs: bool = True,
-        nmf: bool = False,
+        nmf: List[bool] = None,
         device=None,
     ):
         """MuVI generative model.
@@ -1228,9 +1241,9 @@ class MuVIModel(PyroModule):
         reg_hs : bool, optional
             Whether to use the regularized version of HS,
             by default True
-        nmf : bool, optional
+        nmf : List[bool], optional
             Whether to use non-negative matrix factorization,
-            by default False
+            by default empty (False for all views)
         """
         super().__init__(name="MuVIModel")
         self.n_samples = n_samples
@@ -1246,6 +1259,8 @@ class MuVIModel(PyroModule):
             1.0 if global_prior_scale is None else global_prior_scale
         )
         self.reg_hs = reg_hs
+        if nmf is None:
+            nmf = [False for _ in range(self.n_views)]
         self.nmf = nmf
         # only needed if nmf is True
         # self.pos_transform = torch.nn.Softplus(20)
@@ -1366,8 +1381,19 @@ class MuVIModel(PyroModule):
                     ),
                 )
 
-                if self.nmf:
+                if all(self.nmf):
                     output_dict["w"] = self.pos_transform(output_dict["w"])
+
+                # this case could cover both but keeping first if for efficiency
+                if any(self.nmf) and not all(self.nmf):
+                    for m in range(self.n_views):
+                        if self.nmf[m]:
+                            feature_slice = slice(
+                                self.feature_offsets[m], self.feature_offsets[m + 1]
+                            )
+                            output_dict["w"][..., feature_slice] = self.pos_transform(
+                                output_dict["w"][..., feature_slice]
+                            )
 
             if self.n_covariates > 0:
                 with self.get_plate("covariate"):
@@ -1386,7 +1412,7 @@ class MuVIModel(PyroModule):
                 "z",
                 dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
             )
-            if self.nmf:
+            if any(self.nmf):
                 output_dict["z"] = self.pos_transform(output_dict["z"])
 
             y_loc = torch.matmul(output_dict["z"], output_dict["w"])
@@ -1528,8 +1554,17 @@ class MuVIGuide(PyroModule):
     @torch.no_grad()
     def _get_map_estimate(self, param_name: str, as_list: bool):
         param = self.mode(param_name)
-        if self.model.nmf and param_name in ["z", "w"]:
+        if any(self.model.nmf) and param_name == "z":
             param = self.model.pos_transform(param)
+        if param_name == "w":
+            for m in range(self.model.n_views):
+                if self.model.nmf[m]:
+                    feature_slice = slice(
+                        self.model.feature_offsets[m], self.model.feature_offsets[m + 1]
+                    )
+                    param[:, feature_slice] = self.model.pos_transform(
+                        param[:, feature_slice]
+                    )
         param = param.cpu().detach().numpy()
         if param_name == "sigma":
             param = param[None, :]

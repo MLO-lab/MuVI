@@ -1,4 +1,8 @@
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_index(indexer, index, as_idx=True):
@@ -26,11 +30,16 @@ def _normalize_index(indexer, index, as_idx=True):
     # if all False from previous boolean mask
     if len(indexer) == 0:
         raise IndexError(f"Empty index, `{indexer}`.")
-    # note empty, get first element
-    # reason: dtype of str was not working for pd.Index
     # if str, get indices where names match
     if isinstance(indexer[0], (str, np.str_)):
-        indexer = index.get_indexer(indexer)
+        _indexer = index.get_indexer(indexer)
+        bad_idx = [idx for _idx, idx in zip(_indexer, indexer) if _idx == -1]
+        if len(bad_idx) > 0:
+            logger.warning(f"Invalid index, `{bad_idx}`, removing...")
+        indexer = [_idx for _idx in _indexer if _idx != -1]
+    # if all bad indices
+    if len(indexer) == 0:
+        raise IndexError(f"Empty index, `{indexer}`.")
     if isinstance(indexer[0], (int, np.integer)):
         if as_idx:
             return indexer

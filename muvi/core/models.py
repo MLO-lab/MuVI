@@ -56,7 +56,8 @@ class MuVI(PyroModule):
         likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
         reg_hs: bool = True,
         nmf: Optional[Union[Dict[str, bool], List[bool]]] = None,
-        use_gpu: bool = True,
+        n_latent_clusters: int = 1,
+        device: str = "cuda",
     ):
         """MuVI module.
 
@@ -92,8 +93,8 @@ class MuVI(PyroModule):
         nmf : Union[Dict[str, bool], List[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
-        use_gpu : bool, optional
-            Whether to train on a GPU, by default True
+        device : str, optional
+            Device to run computations on, by default "cuda" (GPU)
         """
         super().__init__(name="MuVI")
         self.observations = self._setup_observations(observations, view_names)
@@ -104,12 +105,6 @@ class MuVI(PyroModule):
         self.likelihoods = self._setup_likelihoods(likelihoods)
         self.nmf = self._setup_nmf(nmf)
 
-        self.device = torch.device("cpu")
-        if use_gpu and torch.cuda.is_available():
-            logger.info("GPU available, running all computations on the GPU.")
-            self.device = torch.device("cuda")
-        self.to(self.device)
-
         self.reg_hs = reg_hs
         self._informed = self.prior_masks is not None
         if not self.reg_hs and self._informed:
@@ -118,6 +113,17 @@ class MuVI(PyroModule):
                 "setting `reg_hs` to True."
             )
             self.reg_hs = True
+
+        self.n_latent_clusters = max(1, int(n_latent_clusters))
+        if self.n_latent_clusters > 1:
+            logger.warning("Using multiple latent clusters is an experimental feature.")
+        self.cluster_names = pd.Index(
+            [f"cluster_{c}" for c in range(self.n_latent_clusters)]
+        )
+
+        self.device = self._setup_device(device)
+        self.to(self.device)
+
         self._model = None
         self._guide = None
         self._built = False
@@ -140,6 +146,24 @@ class MuVI(PyroModule):
             signs = (w.sum(axis=1) > 0) * 2 - 1
 
         return pd.Series(signs, index=self.factor_names, dtype=np.float32)
+
+    def _setup_device(self, device):
+        cuda_available = torch.cuda.is_available()
+
+        try:
+            mps_available = torch.backends.mps.is_available()
+        except AttributeError:
+            mps_available = False
+
+        device = str(device).lower()
+        if ("cuda" in device and not cuda_available) or (
+            device == "mps" and not mps_available
+        ):
+            logger.warning(f"`{device}` not available...")
+            device = "cpu"
+
+        logger.info(f"Running all computations on `{device}`.")
+        return torch.device(device)
 
     def _validate_index(self, idx):
         if not is_string_dtype(idx):
@@ -338,7 +362,8 @@ class MuVI(PyroModule):
 
         if n_prior_factors > n_factors:
             logger.warning(
-                "Prior mask informs more factors than the pre-defined `n_factors`. "
+                f"Prior mask informs more factors ({n_prior_factors}) "
+                f"than the pre-defined `n_factors` ({n_factors}). "
                 f"Updating `n_factors` to {n_prior_factors}."
             )
             n_factors = n_prior_factors
@@ -346,7 +371,8 @@ class MuVI(PyroModule):
         n_dense_factors = 0
         if n_prior_factors < n_factors:
             logger.warning(
-                "Prior mask informs fewer factors than the pre-defined `n_factors`. "
+                f"Prior mask informs fewer factors ({n_prior_factors}) "
+                f"than the pre-defined `n_factors` ({n_factors}). "
                 f"Informing only the first {n_prior_factors} factors, "
                 "the rest remains uninformed."
             )
@@ -574,21 +600,46 @@ class MuVI(PyroModule):
     def _get_shared_attr(
         self,
         attr,
+        shared_idx,
+        shared_names,
+        other_idx,
+        other_names,
+        as_df,
+    ):
+        shared_idx = _normalize_index(shared_idx, shared_names)
+        other_idx = _normalize_index(other_idx, other_names)
+        attr = attr[shared_idx, :][:, other_idx]
+        if as_df:
+            attr = pd.DataFrame(
+                attr,
+                index=shared_names[shared_idx],
+                columns=other_names[other_idx],
+            )
+        return attr
+
+    def _get_sample_attr(
+        self,
+        attr,
         sample_idx,
         other_idx,
         other_names,
         as_df,
     ):
-        sample_idx = _normalize_index(sample_idx, self.sample_names)
-        other_idx = _normalize_index(other_idx, other_names)
-        attr = attr[sample_idx, :][:, other_idx]
-        if as_df:
-            attr = pd.DataFrame(
-                attr,
-                index=self.sample_names[sample_idx],
-                columns=other_names[other_idx],
-            )
-        return attr
+        return self._get_shared_attr(
+            attr, sample_idx, self.sample_names, other_idx, other_names, as_df
+        )
+
+    def _get_cluster_attr(
+        self,
+        attr,
+        cluster_idx,
+        other_idx,
+        other_names,
+        as_df,
+    ):
+        return self._get_shared_attr(
+            attr, cluster_idx, self.cluster_names, other_idx, other_names, as_df
+        )
 
     def get_observations(
         self,
@@ -856,6 +907,63 @@ class MuVI(PyroModule):
             as_df=as_df,
         )
 
+    def get_mixture_centers(
+        self, cluster_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
+    ):
+        """Get mixture centers.
+
+        Parameters
+        ----------
+        cluster_idx : Index, optional
+            Cluster index, by default "all"
+        factor_idx : Index, optional
+            Factor index, by default "all"
+        as_df : bool, optional
+            Whether to return a pandas dataframe,
+            by default False
+
+        Returns
+        -------
+        Union[np.ndarray, pd.DataFrame]
+            A single np.ndarray or pd.DataFrame of shape `n_clusters` x `n_factors`.
+        """
+        if self.n_latent_clusters < 2:
+            raise AttributeError(
+                "Model trained on a single latent cluster! "
+                "Rerun with `n_latent_clusters` > 1."
+            )
+        self._raise_untrained_error()
+
+        return self._get_cluster_attr(
+            self._guide.get_mixture_centers(),
+            cluster_idx,
+            other_idx=factor_idx,
+            other_names=self.factor_names,
+            as_df=as_df,
+        )
+
+    def get_assignments(self, as_probabilities: bool = False, as_df: bool = False):
+        mixture_weights = torch.Tensor(self._guide.get_mixture_weights())
+        mixture_centers = torch.Tensor(self.get_mixture_centers())
+        z = torch.Tensor(self.get_factor_scores())
+        normal_dists = [
+            dist.MultivariateNormal(mixture_centers[c], torch.eye(self.n_factors))
+            for c in range(self.n_latent_clusters)
+        ]
+        log_probs = torch.stack([nd.log_prob(z) for nd in normal_dists])
+        probs = mixture_weights.T * torch.exp(log_probs)
+        probs = probs / probs.sum(dim=0, keepdim=True)
+        probs = probs.cpu().detach().numpy().T
+        assignments = np.argmax(probs, axis=1)
+        if as_df:
+            probs = pd.DataFrame(
+                probs, index=self.sample_names, columns=self.cluster_names
+            )
+            assignments = pd.Series(assignments, index=self.sample_names)
+        if as_probabilities:
+            return probs
+        return assignments
+
     def get_factor_scores(
         self, sample_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
     ):
@@ -878,7 +986,7 @@ class MuVI(PyroModule):
         """
         self._raise_untrained_error()
 
-        return self._get_shared_attr(
+        return self._get_sample_attr(
             self._guide.get_z() * self._factor_signs.to_numpy(),
             sample_idx,
             other_idx=factor_idx,
@@ -906,7 +1014,7 @@ class MuVI(PyroModule):
         Union[np.ndarray, pd.DataFrame]
             A single np.ndarray or pd.DataFrame of shape `n_samples` x `n_covariates`.
         """
-        return self._get_shared_attr(
+        return self._get_sample_attr(
             self.covariates,
             sample_idx,
             other_idx=cov_idx,
@@ -942,9 +1050,10 @@ class MuVI(PyroModule):
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
                 nmf=[self.nmf[vn] for vn in self.view_names],
+                n_latent_clusters=self.n_latent_clusters,
                 device=self.device,
             )
-            self._guide = MuVIGuide(self._model, device=self.device)
+            self._guide = MuVIGuide(self._model)
             self._built = True
         return self._built
 
@@ -1007,15 +1116,30 @@ class MuVI(PyroModule):
         if scale:
             scaler = 1.0 / self.n_samples
 
+        loss = pyro.infer.TraceMeanField_ELBO(
+            retain_graph=True,
+            num_particles=n_particles,
+            vectorize_particles=True,
+        )
+
+        if self.n_latent_clusters > 1:
+            if n_particles > 1:
+                logger.warning(
+                    "Cannot use multiple particles "
+                    "with multiple latent clusters, using a single particle."
+                )
+            loss = pyro.infer.TraceEnum_ELBO(
+                retain_graph=True,
+                num_particles=1,
+                vectorize_particles=True,
+                max_plate_nesting=2,
+            )
+
         svi = pyro.infer.SVI(
             model=pyro.poutine.scale(self._model, scale=scaler),
             guide=pyro.poutine.scale(self._guide, scale=scaler),
             optim=optimizer,
-            loss=pyro.infer.TraceMeanField_ELBO(
-                retain_graph=True,
-                num_particles=n_particles,
-                vectorize_particles=True,
-            ),
+            loss=loss,
         )
 
         self._svi = svi
@@ -1217,6 +1341,7 @@ class MuVIModel(PyroModule):
         global_prior_scale: float = 1.0,
         reg_hs: bool = True,
         nmf: List[bool] = None,
+        n_latent_clusters: int = 1,
         device=None,
     ):
         """MuVI generative model.
@@ -1262,6 +1387,8 @@ class MuVIModel(PyroModule):
         if nmf is None:
             nmf = [False for _ in range(self.n_views)]
         self.nmf = nmf
+        self.n_latent_clusters = n_latent_clusters
+        self.latent_gmm = self.n_latent_clusters > 1
         # only needed if nmf is True
         # self.pos_transform = torch.nn.Softplus(20)
         self.pos_transform = torch.nn.ReLU()
@@ -1283,11 +1410,18 @@ class MuVIModel(PyroModule):
         """
         plate_kwargs = {
             "view": {"name": "view", "size": self.n_views, "dim": -1},
-            "factor": {"name": "factor", "size": self.n_factors, "dim": -2},
-            "feature": {"name": "feature", "size": sum(self.n_features), "dim": -1},
+            "factor_left": {"name": "factor_left", "size": self.n_factors, "dim": -2},
+            "factor_right": {"name": "factor_right", "size": self.n_factors, "dim": -1},
+            "cluster": {"name": "cluster", "size": self.n_latent_clusters, "dim": -2},
             "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
+        for m, n_features in zip(range(self.n_views), self.n_features):
+            plate_kwargs[f"feature_{m}"] = {
+                "name": f"feature_{m}",
+                "size": n_features,
+                "dim": -1,
+            }
         return pyro.plate(device=self.device, **{**plate_kwargs[name], **kwargs})
 
     def _zeros(self, size):
@@ -1327,124 +1461,132 @@ class MuVIModel(PyroModule):
         output_dict = {}
 
         view_plate = self.get_plate("view")
-        factor_plate = self.get_plate("factor")
-        feature_plate = self.get_plate("feature")
+        factor_l_plate = self.get_plate("factor_left")
+        factor_r_plate = self.get_plate("factor_right")
+        cluster_plate = self.get_plate("cluster")
+        feature_plates = [self.get_plate(f"feature_{m}") for m in range(self.n_views)]
         sample_plate = self.get_plate("sample", subsample=sample_idx)
+
+        if self.n_covariates > 0:
+            covariate_plate = self.get_plate("covariate")
+
+        if self.latent_gmm:
+            output_dict["mixture_weights"] = pyro.sample(
+                "mixture_weights",
+                dist.Dirichlet(
+                    self._ones(self.n_latent_clusters) / self.n_latent_clusters
+                ),
+            )
+
+            with cluster_plate, factor_r_plate:
+                output_dict["wmm"] = pyro.sample(
+                    "wmm", dist.Normal(self._zeros(1), 5.0 * self._ones(1))
+                )
 
         with view_plate:
             output_dict["view_scale"] = pyro.sample(
                 "view_scale", dist.HalfCauchy(self._ones(1))
             )
-            with factor_plate:
+            with factor_l_plate:
                 output_dict["factor_scale"] = pyro.sample(
                     "factor_scale",
                     dist.HalfCauchy(self._ones(1)),
                 )
 
-        with feature_plate:
-            with factor_plate:
-                output_dict["local_scale"] = pyro.sample(
-                    "local_scale",
-                    dist.HalfCauchy(self._ones(1)),
-                )
-                w_scale = torch.cat(
-                    [
-                        (
-                            output_dict["local_scale"][
-                                ...,
-                                self.feature_offsets[m] : self.feature_offsets[m + 1],
-                            ]
-                            * output_dict["factor_scale"][..., m : m + 1]
-                            * output_dict["view_scale"][..., m : m + 1]
+        for m in range(self.n_views):
+            with feature_plates[m]:
+                with factor_l_plate:
+                    output_dict[f"local_scale_{m}"] = pyro.sample(
+                        f"local_scale_{m}",
+                        dist.HalfCauchy(self._ones(1)),
+                    )
+
+                    w_scale = (
+                        output_dict[f"local_scale_{m}"]
+                        * output_dict["factor_scale"][..., m : m + 1]
+                        * output_dict["view_scale"][..., m : m + 1]
+                    )
+
+                    if self.reg_hs:
+                        slab_scales = 1.0 if prior_scales is None else prior_scales
+                        output_dict[f"caux_{m}"] = pyro.sample(
+                            f"caux_{m}",
+                            dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
                         )
-                        for m in range(self.n_views)
-                    ],
-                    -1,
+                        c = slab_scales[
+                            :, self.feature_offsets[m] : self.feature_offsets[m + 1]
+                        ] * torch.sqrt(output_dict[f"caux_{m}"])
+                        w_scale = (self.global_prior_scale * c * w_scale) / torch.sqrt(
+                            c**2 + w_scale**2
+                        )
+
+                    output_dict[f"w_{m}"] = pyro.sample(
+                        f"w_{m}",
+                        dist.Normal(
+                            self._zeros(1),
+                            w_scale,
+                        ),
+                    )
+
+                    if self.nmf[m]:
+                        output_dict[f"w_{m}"] = self.pos_transform(
+                            output_dict[f"w_{m}"]
+                        )
+
+                if self.n_covariates > 0:
+                    with covariate_plate:
+                        output_dict[f"beta_{m}"] = pyro.sample(
+                            f"beta_{m}",
+                            dist.Normal(self._zeros(1), self._ones(1)),
+                        )
+
+                output_dict[f"sigma_{m}"] = pyro.sample(
+                    f"sigma_{m}",
+                    dist.InverseGamma(self._ones(1), self._ones(1)),
                 )
-
-                if self.reg_hs:
-                    slab_scale = 1.0 if prior_scales is None else prior_scales
-                    output_dict["caux"] = pyro.sample(
-                        "caux",
-                        dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
-                    )
-                    c = slab_scale * torch.sqrt(output_dict["caux"])
-                    w_scale = (self.global_prior_scale * c * w_scale) / torch.sqrt(
-                        c**2 + w_scale**2
-                    )
-
-                output_dict["w"] = pyro.sample(
-                    "w",
-                    dist.Normal(
-                        self._zeros(1),
-                        w_scale,
-                    ),
-                )
-
-                if all(self.nmf):
-                    output_dict["w"] = self.pos_transform(output_dict["w"])
-
-                # this case could cover both but keeping first if for efficiency
-                if any(self.nmf) and not all(self.nmf):
-                    for m in range(self.n_views):
-                        if self.nmf[m]:
-                            feature_slice = slice(
-                                self.feature_offsets[m], self.feature_offsets[m + 1]
-                            )
-                            output_dict["w"][..., feature_slice] = self.pos_transform(
-                                output_dict["w"][..., feature_slice]
-                            )
-
-            if self.n_covariates > 0:
-                with self.get_plate("covariate"):
-                    output_dict["beta"] = pyro.sample(
-                        "beta",
-                        dist.Normal(self._zeros(1), self._ones(1)),
-                    )
-
-            output_dict["sigma"] = pyro.sample(
-                "sigma",
-                dist.InverseGamma(self._ones(1), self._ones(1)),
-            )
 
         with sample_plate:
-            output_dict["z"] = pyro.sample(
-                "z",
-                dist.Normal(self._zeros(self.n_factors), self._ones(self.n_factors)),
-            )
-            if any(self.nmf):
-                output_dict["z"] = self.pos_transform(output_dict["z"])
-
-            y_loc = torch.matmul(output_dict["z"], output_dict["w"])
-            if self.n_covariates > 0:
-                y_loc = y_loc + torch.matmul(covs, output_dict["beta"])
-
-            likelihoods = self.likelihoods
-            feature_offsets = self.feature_offsets
-            if self.same_likelihood:
-                likelihoods = [likelihoods[0]]
-                feature_offsets = [0, feature_offsets[-1]]
-
-            for view_idx, likelihood in enumerate(likelihoods):
-                feature_idx = slice(
-                    feature_offsets[view_idx],
-                    feature_offsets[view_idx + 1],
+            if self.latent_gmm:
+                output_dict["assignment"] = pyro.sample(
+                    "assignment",
+                    dist.Categorical(output_dict["mixture_weights"]),
+                    infer={"enumerate": "parallel"},
                 )
-                if likelihood == "normal":
-                    y_dist = dist.Normal(
-                        y_loc[..., feature_idx],
-                        torch.sqrt(output_dict["sigma"][..., feature_idx]),
-                    )
-                else:
-                    y_dist = dist.Bernoulli(logits=y_loc[..., feature_idx])
 
-                with pyro.poutine.mask(mask=mask[..., feature_idx]):
-                    output_dict[f"y_{view_idx}"] = pyro.sample(
-                        f"y_{view_idx}",
-                        y_dist,
-                        obs=obs[..., feature_idx],
-                        infer={"is_auxiliary": True},
+            with factor_r_plate:
+                z_loc = self._zeros(1)
+                if self.latent_gmm:
+                    z_loc = output_dict["wmm"][output_dict["assignment"][:, 0]]
+                output_dict["z"] = pyro.sample("z", dist.Normal(z_loc, self._ones(1)))
+                if any(self.nmf):
+                    output_dict["z"] = self.pos_transform(output_dict["z"])
+
+            for m in range(self.n_views):
+                with feature_plates[m]:
+                    y_loc = torch.matmul(output_dict["z"], output_dict[f"w_{m}"])
+                    if self.n_covariates > 0:
+                        y_loc = y_loc + torch.matmul(covs, output_dict[f"beta_{m}"])
+
+                    if self.likelihoods[m] == "normal":
+                        y_dist = dist.Normal(
+                            y_loc,
+                            torch.sqrt(output_dict[f"sigma_{m}"]),
+                        )
+                    else:
+                        y_dist = dist.Bernoulli(logits=y_loc)
+
+                    feature_idx = slice(
+                        self.feature_offsets[m],
+                        self.feature_offsets[m + 1],
                     )
+
+                    with pyro.poutine.mask(mask=mask[..., feature_idx]):
+                        output_dict[f"y_{m}"] = pyro.sample(
+                            f"y_{m}",
+                            y_dist,
+                            obs=obs[..., feature_idx],
+                            infer={"is_auxiliary": True},
+                        )
 
         return output_dict
 
@@ -1455,7 +1597,6 @@ class MuVIGuide(PyroModule):
         model,
         init_loc: float = 0.0,
         init_scale: float = 0.1,
-        device=None,
     ):
         """Approximate posterior.
 
@@ -1475,9 +1616,10 @@ class MuVIGuide(PyroModule):
 
         self.init_loc = init_loc
         self.init_scale = init_scale
-        self.device = device
+        self.stick_breaking_transform = dist.transforms.StickBreakingTransform()
+        self.use_stick_breaking = True
 
-        self.setup()
+        self.site_to_dist = self.setup()
 
     def _get_loc_and_scale(self, name: str):
         """Get loc and scale parameters.
@@ -1498,38 +1640,66 @@ class MuVIGuide(PyroModule):
 
     def setup(self):
         """Setup parameters and sampling sites."""
-        n_features = sum(self.model.n_features)
         n_views = self.model.n_views
+        n_samples = self.model.n_samples
+        n_latent_clusters = self.model.n_latent_clusters
         n_factors = self.model.n_factors
+        n_features = self.model.n_features
+        n_covariates = self.model.n_covariates
 
         site_to_shape = {
-            "z": (self.model.n_samples, n_factors),
-            "view_scale": n_views,
+            "mixture_weights": (n_latent_clusters - int(self.use_stick_breaking),),
+            "wmm": (n_latent_clusters, n_factors),
+            "z": (n_samples, n_factors),
+            "view_scale": (n_views,),
             "factor_scale": (n_factors, n_views),
-            "local_scale": (n_factors, n_features),
-            "caux": (n_factors, n_features),
-            "w": (n_factors, n_features),
-            "beta": (self.model.n_covariates, n_features),
-            "sigma": n_features,
         }
 
+        normal_sites = ["wmm", "z"]
+        for m in range(n_views):
+            site_to_shape[f"local_scale_{m}"] = (n_factors, n_features[m])
+            site_to_shape[f"caux_{m}"] = (n_factors, n_features[m])
+            site_to_shape[f"w_{m}"] = (n_factors, n_features[m])
+            site_to_shape[f"beta_{m}"] = (n_covariates, n_features[m])
+            site_to_shape[f"sigma_{m}"] = (n_features[m],)
+
+            normal_sites.append(f"w_{m}")
+            normal_sites.append(f"beta_{m}")
+
+        site_to_dist = {
+            k: ("Normal" if k in normal_sites else "LogNormal")
+            for k in site_to_shape.keys()
+        }
+        site_to_dist["mixture_weights"] = "Dirichlet"
+
         for name, shape in site_to_shape.items():
+            init_loc = self.init_loc
+            init_scale = self.init_scale
+            if name == "wmm":
+                init_loc = torch.normal(
+                    mean=self.model._zeros(shape),
+                    std=self.model._ones(shape),
+                )
             deep_setattr(
                 self.locs,
                 name,
                 PyroParam(
-                    self.init_loc * torch.ones(shape, device=self.device),
+                    init_loc * self.model._ones(shape),
                     constraints.real,
                 ),
             )
+            if name == "mixture_weights" and not self.use_stick_breaking:
+                init_scale = 1 / shape[0]
             deep_setattr(
                 self.scales,
                 name,
                 PyroParam(
-                    self.init_scale * torch.ones(shape, device=self.device),
+                    init_scale * self.model._ones(shape),
                     constraints.softplus_positive,
                 ),
             )
+
+        return site_to_dist
 
     @torch.no_grad()
     def mode(self, name: str):
@@ -1547,84 +1717,113 @@ class MuVIGuide(PyroModule):
         """
         loc, scale = self._get_loc_and_scale(name)
         mode = loc
-        if name not in ["z", "w", "beta"]:
-            mode = (loc - scale.pow(2)).exp()
+        if self.site_to_dist[name] == "LogNormal":
+            mode = (loc - scale.square()).exp()
+        if self.site_to_dist[name] == "Dirichlet":
+            if self.use_stick_breaking:
+                mode = self.stick_breaking_transform(mode)
+            else:
+                mode = dist.Dirichlet(scale).mode
+        if (name == "z" or name == "wnn") and any(self.model.nmf):
+            mode = self.model.pos_transform(mode)
+        for m in range(self.model.n_views):
+            if name == f"w_{m}" and self.model.nmf[m]:
+                mode = self.model.pos_transform(mode)
         return mode.clone()
 
     @torch.no_grad()
-    def _get_map_estimate(self, param_name: str, as_list: bool):
-        param = self.mode(param_name)
-        if any(self.model.nmf) and param_name == "z":
-            param = self.model.pos_transform(param)
-        if param_name == "w":
-            for m in range(self.model.n_views):
-                if self.model.nmf[m]:
-                    feature_slice = slice(
-                        self.model.feature_offsets[m], self.model.feature_offsets[m + 1]
-                    )
-                    param[:, feature_slice] = self.model.pos_transform(
-                        param[:, feature_slice]
-                    )
-        param = param.cpu().detach().numpy()
-        if param_name == "sigma":
-            param = param[None, :]
+    def _get_map_estimate(self, param_name: str, is_list_param: bool, as_list: bool):
+        is_list_param |= as_list
+        if is_list_param:
+            params = [self.mode(f"{param_name}_{m}") for m in range(self.model.n_views)]
+        else:
+            params = [self.mode(param_name)]
+
+        vector_params = ["view_scale", "mixture_weights", "sigma"]
+
+        if param_name in vector_params:
+            params = [param[None, :] for param in params]
+        params = [param.cpu().detach().numpy() for param in params]
 
         if as_list:
-            return [
-                param[
-                    :, self.model.feature_offsets[m] : self.model.feature_offsets[m + 1]
-                ]
-                for m in range(self.model.n_views)
-            ]
-        return param
+            return params
+        return np.concatenate(params, axis=1)
+
+    def get_mixture_weights(self):
+        """Get the mixture weights."""
+        return self._get_map_estimate("mixture_weights", False, False)
+
+    def get_mixture_centers(self):
+        """Get the mixture centers."""
+        return self._get_map_estimate("wmm", False, False)
 
     def get_sigma(self, as_list: bool = False):
         """Get the marginal feature scales."""
-        return self._get_map_estimate("sigma", as_list=as_list)
+        return self._get_map_estimate("sigma", True, as_list=as_list)
 
     def get_view_scale(self):
         """Get the view scales."""
-        return self._get_map_estimate("view_scale", False)
+        return self._get_map_estimate("view_scale", False, False)
 
     def get_factor_scale(self):
         """Get the factor scales."""
-        return self._get_map_estimate("factor_scale", False).T
+        return self._get_map_estimate("factor_scale", False, False).T
 
     def get_local_scale(self, as_list: bool = False):
         """Get the local scales."""
-        return self._get_map_estimate("local_scale", as_list=as_list)
+        return self._get_map_estimate("local_scale", True, as_list=as_list)
 
     def get_caux(self, as_list: bool = False):
         """Get the c auxiliaries."""
-        return self._get_map_estimate("caux", as_list=as_list)
+        return self._get_map_estimate("caux", True, as_list=as_list)
 
     def get_z(self):
         """Get the factor scores."""
-        return self._get_map_estimate("z", False)
+        return self._get_map_estimate("z", False, False)
 
     def get_w(self, as_list: bool = False):
         """Get the factor loadings."""
-        return self._get_map_estimate("w", as_list=as_list)
+        return self._get_map_estimate("w", True, as_list=as_list)
 
     def get_beta(self, as_list: bool = False):
         """Get the beta coefficients."""
-        return self._get_map_estimate("beta", as_list=as_list)
+        return self._get_map_estimate("beta", True, as_list=as_list)
 
-    def _sample_normal(self, name: str, index=None):
-        # duplicate code below, might update later
+    def _sample_transformed_dirichlet(self, name, loc, scale):
+        unconstrained_latent = pyro.sample(
+            name + "_unconstrained",
+            dist.Normal(
+                loc,
+                scale,
+            ).to_event(1),
+            infer={"is_auxiliary": True},
+        )
+
+        value = self.stick_breaking_transform(unconstrained_latent)
+        log_density = self.stick_breaking_transform.inv.log_abs_det_jacobian(
+            value,
+            unconstrained_latent,
+        )
+        delta_dist = dist.Delta(
+            value,
+            log_density=log_density,
+            event_dim=1,
+        )
+
+        return pyro.sample(name, delta_dist)
+
+    def _sample(self, name, index=None):
         loc, scale = self._get_loc_and_scale(name)
         if index is not None:
-            # indices = indices.to(self.device)
             loc = loc.index_select(0, index)
             scale = scale.index_select(0, index)
+        if self.site_to_dist[name] == "LogNormal":
+            return pyro.sample(name, dist.LogNormal(loc, scale))
+        if self.site_to_dist[name] == "Dirichlet":
+            if self.use_stick_breaking:
+                return self._sample_transformed_dirichlet(name, loc, scale)
+            return pyro.sample(name, dist.Dirichlet(scale))
         return pyro.sample(name, dist.Normal(loc, scale))
-
-    def _sample_log_normal(self, name: str, index=None):
-        loc, scale = self._get_loc_and_scale(name)
-        if index is not None:
-            loc = loc.index_select(0, index)
-            scale = scale.index_select(0, index)
-        return pyro.sample(name, dist.LogNormal(loc, scale))
 
     def forward(
         self,
@@ -1638,28 +1837,42 @@ class MuVIGuide(PyroModule):
         output_dict = {}
 
         view_plate = self.model.get_plate("view")
-        factor_plate = self.model.get_plate("factor")
-        feature_plate = self.model.get_plate("feature")
+        factor_l_plate = self.model.get_plate("factor_left")
+        factor_r_plate = self.model.get_plate("factor_right")
+        cluster_plate = self.model.get_plate("cluster")
+        feature_plates = [
+            self.model.get_plate(f"feature_{m}") for m in range(self.model.n_views)
+        ]
         sample_plate = self.model.get_plate("sample", subsample=sample_idx)
 
+        if self.model.n_covariates > 0:
+            covariate_plate = self.model.get_plate("covariate")
+
+        if self.model.latent_gmm:
+            output_dict["mixture_weights"] = self._sample("mixture_weights")
+            with cluster_plate, factor_r_plate:
+                output_dict["wmm"] = self._sample("wmm")
+
         with view_plate:
-            output_dict["view_scale"] = self._sample_log_normal("view_scale")
-            with factor_plate:
-                output_dict["factor_scale"] = self._sample_log_normal("factor_scale")
+            output_dict["view_scale"] = self._sample("view_scale")
+            with factor_l_plate:
+                output_dict["factor_scale"] = self._sample("factor_scale")
 
-        with feature_plate:
-            with factor_plate:
-                output_dict["local_scale"] = self._sample_log_normal("local_scale")
-                if self.model.reg_hs:
-                    output_dict["caux"] = self._sample_log_normal("caux")
-                output_dict["w"] = self._sample_normal("w")
+        for m in range(self.model.n_views):
+            with feature_plates[m]:
+                with factor_l_plate:
+                    output_dict[f"local_scale_{m}"] = self._sample(f"local_scale_{m}")
+                    if self.model.reg_hs:
+                        output_dict[f"caux_{m}"] = self._sample(f"caux_{m}")
+                    output_dict[f"w_{m}"] = self._sample(f"w_{m}")
 
-            if self.model.n_covariates > 0:
-                with self.model.get_plate("covariate"):
-                    output_dict["beta"] = self._sample_normal("beta")
+                if self.model.n_covariates > 0:
+                    with covariate_plate:
+                        output_dict[f"beta_{m}"] = self._sample(f"beta_{m}")
 
-            output_dict["sigma"] = self._sample_log_normal("sigma")
+                output_dict[f"sigma_{m}"] = self._sample(f"sigma_{m}")
 
         with sample_plate as indices:
-            output_dict["z"] = self._sample_normal("z", indices)
+            with factor_r_plate:
+                output_dict["z"] = self._sample("z", indices)
         return output_dict

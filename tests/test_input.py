@@ -11,7 +11,7 @@ def test_numpy_input(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
-        use_gpu=False,
+        device="cpu",
     )
 
     assert model.n_views == data_gen.n_views
@@ -39,7 +39,7 @@ def test_pandas_input(pandas_input):
         pandas_input["masks"],
         pandas_input["covariates"],
         view_names=pandas_input["view_names"],
-        use_gpu=False,
+        device="cpu",
     )
 
     assert all(model.view_names == pandas_input["view_names"])
@@ -63,7 +63,7 @@ def test_pandas_input_shuffled_samples(pandas_input):
         pandas_input["masks"],
         pandas_input["covariates"],
         view_names=pandas_input["view_names"],
-        use_gpu=False,
+        device="cpu",
     )
 
     assert all(model.sample_names == observations[0].index)
@@ -83,7 +83,7 @@ def test_pandas_input_missing_samples(pandas_input):
             bad_observations,
             covariates=pandas_input["covariates"],
             n_factors=pandas_input["n_factors"],
-            use_gpu=False,
+            device="cpu",
         )
 
     with pytest.raises(
@@ -93,7 +93,7 @@ def test_pandas_input_missing_samples(pandas_input):
             pandas_input["observations"],
             covariates=pandas_input["covariates"].iloc[:-1, :],
             n_factors=pandas_input["n_factors"],
-            use_gpu=False,
+            device="cpu",
         )
 
     with pytest.raises(
@@ -105,7 +105,7 @@ def test_pandas_input_missing_samples(pandas_input):
             pandas_input["observations"],
             bad_masks,
             pandas_input["covariates"],
-            use_gpu=False,
+            device="cpu",
         )
 
 
@@ -119,5 +119,5 @@ def test_pandas_input_missing_features(pandas_input):
             pandas_input["observations"],
             bad_masks,
             pandas_input["covariates"],
-            use_gpu=False,
+            device="cpu",
         )

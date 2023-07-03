@@ -55,7 +55,7 @@ def test_get_observations_view(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
-        use_gpu=False,
+        device="cpu",
     )
 
     # single view
@@ -81,7 +81,7 @@ def test_get_observations_sample(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
-        use_gpu=False,
+        device="cpu",
     )
 
     for sample_idx in [5, [5], "sample_5", ["sample_5"]]:
@@ -97,7 +97,7 @@ def test_get_observations_feature(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
-        use_gpu=False,
+        device="cpu",
     )
 
     # single view

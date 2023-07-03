@@ -1,4 +1,4 @@
-from muvi import MuVI, save, load
+from muvi import MuVI, load, save
 
 
 def test_save_load(data_gen):
@@ -7,7 +7,7 @@ def test_save_load(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
-        use_gpu=False,
+        device="cpu",
     )
     model.fit(
         batch_size=0,

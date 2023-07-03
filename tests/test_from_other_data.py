@@ -10,7 +10,7 @@ def test_from_adata(data_gen):
         adata,
         prior_mask_key="w_mask",
         covariate_key="x",
-        use_gpu=False,
+        device="cpu",
     )
     model.fit(
         batch_size=0,
@@ -33,7 +33,7 @@ def test_from_mdata(data_gen):
         data_gen.to_mdata(),
         prior_mask_key="w_mask",
         covariate_key="x",
-        use_gpu=False,
+        device="cpu",
     )
     model.fit(
         batch_size=0,

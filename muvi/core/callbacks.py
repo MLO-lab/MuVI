@@ -13,9 +13,8 @@ class EarlyStoppingCallback:
         self,
         n_epochs: int,
         min_epochs: int = 100,
-        window_size: int = 10,
-        tolerance: float = 1e-4,
-        patience: int = 1,
+        tolerance: float = 1e-5,
+        patience: int = 10,
     ):
         """Early stopping callback.
 
@@ -25,53 +24,49 @@ class EarlyStoppingCallback:
             Number of training epochs
         min_epochs : int, optional
             Minimal number of epochs before deploying early stopping,
-            by default 1000
-        window_size : int, optional
-            Number of epochs before aggregating scores,
-            by default 10
+            by default 100
         tolerance : float, optional
             Improvement ratio between two consecutive evaluations,
-            by default 1e-3
+            by default 1e-5
         patience : int, optional
             Number of patience steps before terminating training,
-            by default 1
+            by default 10
         """
         self.n_epochs = n_epochs
         self.min_epochs = min_epochs
         self.tolerance = tolerance
         self.patience = patience
 
-        self.window_size = window_size
         self.early_stop_counter = 0
-        self.min_avg_loss = np.inf
+        self.min_loss = np.inf
 
     def __call__(self, loss_history):
+        epoch_idx = len(loss_history) - 1
+        if epoch_idx < self.min_epochs:
+            return False
+
+        current_loss = loss_history[epoch_idx]
+        if self.min_loss == np.inf:
+            self.min_loss = current_loss
+            return False
+
         stop_early = False
 
-        epoch_idx = len(loss_history) - 1
+        relative_improvement = (self.min_loss - current_loss) / np.abs(self.min_loss)
+        self.min_loss = min(self.min_loss, current_loss)
 
-        if epoch_idx % self.window_size == 0 and epoch_idx > self.min_epochs:
-            current_window_avg_loss = np.mean(loss_history[-self.window_size :])
+        if relative_improvement < self.tolerance:
+            self.early_stop_counter += 1
+        else:
+            self.early_stop_counter = 0
+        stop_early = self.early_stop_counter >= self.patience
 
-            relative_improvement = (
-                self.min_avg_loss - current_window_avg_loss
-            ) / np.abs(current_window_avg_loss)
-
-            self.min_avg_loss = min(current_window_avg_loss, self.min_avg_loss)
-
-            if relative_improvement < self.tolerance:
-                self.early_stop_counter += 1
-            else:
-                self.early_stop_counter = 0
-
-            stop_early = self.early_stop_counter >= self.patience
-
-            if stop_early:
-                print(
-                    f"Relative improvement of "
-                    f"{relative_improvement:0.4g} < {self.tolerance:0.4g} "
-                    f"for {self.patience} step(s) in a row, stopping early."
-                )
+        if stop_early:
+            print(
+                f"Relative improvement of "
+                f"{relative_improvement:0.4g} < {self.tolerance:0.4g} "
+                f"for {self.patience} step(s) in a row, stopping early."
+            )
 
         return stop_early
 
@@ -292,7 +287,6 @@ class LogCallback:
             self.zs.append(self.factor_scores)
 
     def __call__(self, loss_history):
-
         for key, cb in self.callback_dict.items():
             cb(loss_history)
 

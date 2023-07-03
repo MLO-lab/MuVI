@@ -116,7 +116,7 @@ def save_as_hdf5(
     f_Z = f.create_group("expectations/Z")
 
     for vn in model.view_names:
-        f_W.create_dataset(vn, data=model.get_factor_loadings()[vn])
+        f_W.create_dataset(vn, data=model.get_factor_loadings()[vn][r2_order, :])
     f_Z.create_dataset(
         default_group_name, data=model.get_factor_scores()[:, r2_order].T
     )

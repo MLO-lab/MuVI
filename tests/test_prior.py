@@ -8,7 +8,7 @@ def test_fewer_n_factors(pandas_input):
         pandas_input["covariates"],
         n_factors=pandas_input["n_factors"] - 2,
         view_names=pandas_input["view_names"],
-        use_gpu=False,
+        device="cpu",
     )
 
     assert model.n_factors == pandas_input["n_factors"]
@@ -23,7 +23,7 @@ def test_more_n_factors(pandas_input):
         pandas_input["covariates"],
         n_factors=pandas_input["n_factors"] + n_dense,
         view_names=pandas_input["view_names"],
-        use_gpu=False,
+        device="cpu",
     )
 
     assert model.n_factors == pandas_input["n_factors"] + n_dense

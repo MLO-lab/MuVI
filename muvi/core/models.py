@@ -93,6 +93,9 @@ class MuVI(PyroModule):
         nmf : Union[Dict[str, bool], List[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
+        n_latent_clusters : int, optional
+            Number of latent clusters to be inferred by a GMM prior,
+            by default 1 (standard normal prior)
         device : str, optional
             Device to run computations on, by default "cuda" (GPU)
         """
@@ -1369,6 +1372,11 @@ class MuVIModel(PyroModule):
         nmf : List[bool], optional
             Whether to use non-negative matrix factorization,
             by default empty (False for all views)
+        n_latent_clusters : int, optional
+            Number of latent clusters to be inferred by a GMM prior,
+            by default 1 (standard normal prior)
+        device : str, optional
+            Device to run computations on, by default "cuda" (GPU)
         """
         super().__init__(name="MuVIModel")
         self.n_samples = n_samples
@@ -1482,6 +1490,8 @@ class MuVIModel(PyroModule):
                 output_dict["wmm"] = pyro.sample(
                     "wmm", dist.Normal(self._zeros(1), 5.0 * self._ones(1))
                 )
+                if any(self.nmf):
+                    output_dict["wmm"] = self.pos_transform(output_dict["wmm"])
 
         with view_plate:
             output_dict["view_scale"] = pyro.sample(

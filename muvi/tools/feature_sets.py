@@ -366,26 +366,34 @@ class FeatureSets:
             columns=features_list,
         )
 
-    def distance(
+    def similarity_to_feature_sets(
         self, other: "FeatureSets" = None, metric: str = "jaccard"
     ) -> pd.DataFrame:
-        """Compute distance matrix between feature sets.
+        """Compute similarity matrix between feature sets.
 
         Parameters
         ----------
         other : FeatureSets, optional
             Other feature set collection, by default None.
         metric : str, optional
-            Distance metric, by default "jaccard".
+            Similarity metric, by default "jaccard".
 
         Returns
         -------
         pd.DataFrame
-            Distance matrix.
+            Similarity matrix as 1 minus distance matrix,
+            may lead to negative values for some distance metrics.
         """
+
+        if metric not in ["jaccard", "cosine"]:
+            logger.warning(
+                f"Similarity matrix for `{metric}` might be negative. "
+                f"Recommended metrics are `jaccard` or `cosine`."
+            )
+
         self_mask = self.to_mask()
         other_mask = other.to_mask() if other else self_mask
-        return pd.DataFrame(
+        return 1 - pd.DataFrame(
             pairwise_distances(
                 self_mask.to_numpy(), other_mask.to_numpy(), metric=metric
             ),
@@ -393,44 +401,124 @@ class FeatureSets:
             columns=other_mask.index,
         )
 
-    def find_similar_pairs(
-        self, metric: str = "jaccard", distance_threshold: float = 0.3
+    def similarity_to_observations(
+        self,
+        observations: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Compute similarity matrix between feature sets.
+
+        Parameters
+        ----------
+        observations : pd.DataFrame
+            Dataframe of observations.
+
+        Returns
+        -------
+        pd.DataFrame
+            Similarity matrix as correlation matrix.
+        """
+        obs_mean = observations.mean(axis=1)
+
+        dist_to_mean_dict = {}
+        for feature_set in self.feature_sets:
+            col_subset = [
+                col for col in observations.columns if col in feature_set.features
+            ]
+            if len(col_subset) == 0:
+                dist_to_mean_dict[feature_set.name] = pd.Series(
+                    np.nan, index=observations.index
+                )
+                continue
+            dist_to_mean_dict[feature_set.name] = (
+                observations.loc[:, col_subset].mean(axis=1) - obs_mean
+            )
+
+        return pd.DataFrame(dist_to_mean_dict).corr()
+
+    def _find_similar_pairs(
+        self, sim_matrix: pd.DataFrame, similarity_threshold: float
     ) -> Set[Tuple[str, str]]:
         """Find similar pairs of feature sets.
 
         Parameters
         ----------
-        metric : str, optional
-            Distance metric, by default "jaccard".
-        distance_threshold : float, optional
-            Distance threshold to consider similar pairs,
-            by default 0.3 (jaccard similarity of 0.7).
+        sim_matrix : pd.DataFrame
+            Similarity matrix.
+        similarity_threshold : float
+            Similarity threshold to consider similar pairs.
 
         Returns
         -------
         Set[Tuple[str, str]]
             Similar pairs of feature sets.
         """
-        dist_matrix = self.distance(metric=metric)
 
         pairs = set()
         visited = set()
 
         row_offset = 0
-        for current_fs, row in dist_matrix.iterrows():
+        for current_fs, row in sim_matrix.iterrows():
             row_offset += 1
             if row_offset >= len(row):
                 break
             if current_fs in visited:
                 continue
             visited.add(current_fs)
-            closest_fs = row.iloc[row_offset:].idxmin()
-            distance = row[closest_fs]
-            if distance <= distance_threshold and closest_fs not in visited:
-                pairs.add((current_fs, closest_fs, distance))
+            closest_fs = row.iloc[row_offset:].idxmax()
+            similarity = row[closest_fs]
+            if similarity >= similarity_threshold and closest_fs not in visited:
+                pairs.add((current_fs, closest_fs, similarity))
                 visited.add(closest_fs)
 
         return pairs
+
+    def find_similar_pairs(
+        self,
+        observations: pd.DataFrame = None,
+        metric: str = None,
+        similarity_threshold: float = 0.8,
+    ) -> Set[Tuple[str, str]]:
+        """Find similar pairs of feature sets.
+
+        Parameters
+        ----------
+        observations : pd.DataFrame, optional
+            Dataframe of observations, if provided, the similarity between feature sets
+            is computed based on the correlation of the similarity from the mean
+            of the observations in the feature set, by default None.
+        metric : str, optional
+            Similarity metric, by default "jaccard" if observations not provided.
+        similarity_threshold : float, optional
+            Similarity threshold to consider similar pairs,
+            by default 0.8.
+
+        Returns
+        -------
+        Set[Tuple[str, str]]
+            Similar pairs of feature sets.
+        """
+        if observations is None and metric is None:
+            logger.warning(
+                "Neither observations nor metric is provided,"
+                " using `metric=jaccard` as default."
+            )
+            metric = "jaccard"
+
+        sim_matrix = []
+        if observations is not None:
+            sim_matrix.append(self.similarity_to_observations(observations))
+        if metric is not None:
+            sim_matrix.append(self.similarity_to_feature_sets(metric=metric))
+
+        if observations is not None and metric is not None:
+            sim_matrix[0][sim_matrix[0] < 0] = 0.0
+            sim_matrix[1][sim_matrix[1] < 0] = 0.0
+            sim_matrix = (2 * sim_matrix[0] * sim_matrix[1]) / (
+                sim_matrix[0] + sim_matrix[1]
+            )
+        else:
+            sim_matrix = sim_matrix[0]
+        return self._find_similar_pairs(sim_matrix.fillna(0.0), similarity_threshold)
 
     def merge_pairs(self, pairs: Iterable[Tuple[str, str]]):
         """Merge pairs of feature sets.
@@ -460,16 +548,42 @@ class FeatureSets:
 
     def merge_similar(
         self,
-        metric: str = "jaccard",
-        distance_threshold: float = 0.3,
+        observations: pd.DataFrame = None,
+        metric: str = None,
+        similarity_threshold: float = 0.8,
         iteratively: bool = True,
     ):
+        """Merge similar feature sets.
+
+
+        Parameters
+        ----------
+        observations : pd.DataFrame, optional
+            Dataframe of observations, if provided, the similarity between feature sets
+            is computed based on the correlation of the similarity from the mean
+            of the observations in the feature set, by default None.
+        metric : str, optional
+            Similarity metric, by default "jaccard" if observations not provided.
+        similarity_threshold : float, optional
+            Similarity threshold to consider similar pairs,
+            by default 0.8.
+        iteratively : bool, optional
+            Whether to merge iteratively, by default True
+
+        Returns
+        -------
+        FeatureSets
+            Merged feature sets.
+        """
+
         feature_sets = self
         while True:
             pairs = {
                 (name1, name2)
                 for name1, name2, _ in feature_sets.find_similar_pairs(
-                    metric=metric, distance_threshold=distance_threshold
+                    observations=observations,
+                    metric=metric,
+                    similarity_threshold=similarity_threshold,
                 )
             }
             stopping = ""

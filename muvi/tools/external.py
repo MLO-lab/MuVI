@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def save_as_hdf5(
     model,
     path,
-    save_metadata=False,
+    save_metadata=True,
 ):
     if not model._trained:
         raise ValueError(

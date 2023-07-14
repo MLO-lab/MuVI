@@ -173,11 +173,12 @@ def test_distance():
         [feature_set_0, feature_set_1, feature_set_2], name="feature_sets"
     )
 
-    feature_sets_distance = feature_sets.distance()
-    assert np.diag(feature_sets_distance.values).sum() == 0
-    assert feature_sets_distance.loc["feature_set_0", "feature_set_1"] == 4 / 5
-    assert feature_sets_distance.loc["feature_set_0", "feature_set_2"] == 1
-    assert feature_sets_distance.loc["feature_set_1", "feature_set_2"] == 1 / 2
+    feature_sets_similarity = feature_sets.similarity_to_feature_sets()
+    assert np.diag(feature_sets_similarity.values).sum() == 3
+    # 1 - 4 / 5 ~ 0.199999 otherwise it doesn't match
+    assert feature_sets_similarity.loc["feature_set_0", "feature_set_1"] == (1 - 4 / 5)
+    assert feature_sets_similarity.loc["feature_set_0", "feature_set_2"] == 0
+    assert feature_sets_similarity.loc["feature_set_1", "feature_set_2"] == 0.5
 
 
 def test_find_similar_pairs():
@@ -189,12 +190,15 @@ def test_find_similar_pairs():
         [feature_set_0, feature_set_1, feature_set_2], name="feature_sets"
     )
 
-    assert feature_sets.find_similar_pairs(distance_threshold=0.8) == set(
-        [("feature_set_0", "feature_set_1", 0.8)]
-    )
-    # 0.5 closer than 0.8
-    assert feature_sets.find_similar_pairs(distance_threshold=0.5) == set(
+    assert feature_sets.find_similar_pairs(similarity_threshold=0.5) == set(
         [("feature_set_1", "feature_set_2", 0.5)]
+    )
+    point_2 = 1 - 4 / 5
+    # even though FS1 and FS2 are more similar than FS0 and FS1,
+    # FS0 and FS1 are returned because they are the first pair to be found
+    # given the similarity_threshold..
+    assert feature_sets.find_similar_pairs(similarity_threshold=point_2) == set(
+        [("feature_set_0", "feature_set_1", point_2)]
     )
 
 
@@ -207,18 +211,18 @@ def test_merge_similar():
         [feature_set_0, feature_set_1, feature_set_2], name="feature_sets"
     )
 
-    assert feature_sets.merge_similar(distance_threshold=0.8) == FeatureSets(
+    assert feature_sets.merge_similar(similarity_threshold=0.5) == FeatureSets(
+        [
+            FeatureSet(features=list("ABC"), name="feature_set_0"),
+            FeatureSet(features=list("CDEX"), name="feature_set_1|feature_set_2"),
+        ]
+    )
+
+    assert feature_sets.merge_similar(similarity_threshold=(1 - 4 / 5)) == FeatureSets(
         [
             FeatureSet(
                 features=list("ABCDEX"),
                 name="feature_set_0|feature_set_1|feature_set_2",
             )
-        ]
-    )
-
-    assert feature_sets.merge_similar(distance_threshold=0.5) == FeatureSets(
-        [
-            FeatureSet(features=list("ABC"), name="feature_set_0"),
-            FeatureSet(features=list("CDEX"), name="feature_set_1|feature_set_2"),
         ]
     )

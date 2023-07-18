@@ -170,6 +170,8 @@ def variance_explained(
     if r2_cov is None or r2_cov.empty:
         vlines = None
 
+    kwargs["vmin"] = 0
+
     g = lined_heatmap(r2_joint, figsize=figsize, vlines=vlines, **kwargs)
     savefig_or_show("variance_explained", show=show, save=save)
     if not show:
@@ -966,3 +968,38 @@ def scatter(
     savefig_or_show("scatter", show=show, save=save)
     if not show:
         return g
+
+
+def scatter_rank(model, groupby=None, groups=None, **kwargs):
+    group_df = sc.get.rank_genes_groups_df(model._cache.factor_adata, group=groups)
+    group_df["scores_abs"] = group_df["scores"].abs()
+
+    relevant_factors_dict = {}
+    for group in group_df["group"].unique():
+        relevant_factors_dict[group] = (
+            group_df[group_df["group"] == group]
+            .sort_values("scores_abs", ascending=False)
+            .iloc[:2]["names"]
+            .tolist()
+        )
+
+    show = kwargs.pop("show", None)
+    save = kwargs.pop("save", None)
+    gs = {}
+
+    for group, relevant_factors in relevant_factors_dict.items():
+        g = muvi.pl.scatter(
+            model,
+            *relevant_factors[:2],
+            groupby=groupby,
+            groups=groups,
+            show=False,
+            save=False,
+            **kwargs,
+        )
+
+        g.set_title(f"{groupby} ({group})")
+        savefig_or_show(f"scatter_rank_{group}", show=show, save=save)
+        gs[group] = g
+    if not show:
+        return gs

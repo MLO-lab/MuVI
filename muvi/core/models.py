@@ -1518,14 +1518,21 @@ class MuVIModel(PyroModule):
                     )
 
                     if self.reg_hs:
-                        slab_scales = 1.0 if prior_scales is None else prior_scales
                         output_dict[f"caux_{m}"] = pyro.sample(
                             f"caux_{m}",
                             dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
                         )
-                        c = slab_scales[
-                            :, self.feature_offsets[m] : self.feature_offsets[m + 1]
-                        ] * torch.sqrt(output_dict[f"caux_{m}"])
+                        c = torch.sqrt(output_dict[f"caux_{m}"])
+                        if prior_scales is not None:
+                            c = (
+                                c
+                                * prior_scales[
+                                    :,
+                                    self.feature_offsets[m] : self.feature_offsets[
+                                        m + 1
+                                    ],
+                                ]
+                            )
                         w_scale = (self.global_prior_scale * c * w_scale) / torch.sqrt(
                             c**2 + w_scale**2
                         )

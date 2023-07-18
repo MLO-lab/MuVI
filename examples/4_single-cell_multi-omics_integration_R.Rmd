@@ -3,7 +3,7 @@ title: "Non-negative Integration of Gene Expression and Chromatin Accessibility 
 author:
 - name: "Arber Qoku"
   affiliation: "German Cancer Research Center (DKFZ), Heidelberg, Germany"
-  email: "arber.qoku@dkfz.de"
+  email: "arber.qoku`at`dkfz.de"
 - name: "Florian Buettner"
   affiliation: "German Cancer Research Center (DKFZ), Heidelberg, Germany"
 date: "`r Sys.Date()`"
@@ -17,7 +17,7 @@ vignette: >
 
 # Introduction
 
-This vignette demonstrates how to load a trained `MuVI` model using the [MOFA2](https://biofam.github.io/MOFA2) R package, and perform a typical downstream analysis for multi-omics data. Briefly, `MuVI` is a multi-view latent variable model with domain-informed structured sparsity, that integrates (noisy) feature sets e.g. gene set annotations. In this analysis we rely on a pretrained `MuVI` model according to [this python notebook](3c_single-cell_multi-omics_integration_nmf.ipynb) on RNA-seq and ATAC-seq, in order to infer a joint latent space that is informed a priori by cell type gene set annotations.
+This vignette demonstrates how to load a trained `MuVI` model using the [MOFA2](https://biofam.github.io/MOFA2) R package, and perform a typical downstream analysis for multi-omics data. Briefly, `MuVI` is a multi-view latent variable model with domain-informed structured sparsity, that integrates (noisy) feature sets e.g. gene set annotations. In this analysis we rely on a pretrained `MuVI` model according to [this python notebook](https://github.com/MLO-lab/MuVI/blob/master/examples/3c_single-cell_multi-omics_integration_nmf.ipynb) on RNA-seq and ATAC-seq, in order to infer a joint latent space that is informed a priori by cell type gene set annotations.
 
 ```{r global_options, include=FALSE}
 knitr::opts_chunk$set(warning=FALSE, message=FALSE, error=FALSE, fig.align="center")
@@ -44,9 +44,8 @@ Load the `MuVI` model with the training data. Essentially, we call the underlyin
 load_muvi <- function(file) {
   factors_names <- h5read(file, "/factors/group_0")
   model <- load_model(file,
-    sort_factors = FALSE,
-    remove_inactive_factors = FALSE
-  )
+                      sort_factors = FALSE,
+                      remove_inactive_factors = FALSE)
   factors_names(model) <- factors_names
   return(model)
 }
@@ -74,24 +73,32 @@ plot_variance_explained(muvi)
 Since the latent factors in `MuVI` are pre-labelled by design, we may directly inspect how they differentiate the cell population. In this case, we see that the latent factor informed by the `Naive T Cell` gene set assigns higher scores to the 4 groups of T cells. In addition, the `Follicular B Cell` factor helps distinguish B cells from the rest of the cell population. The same can be said about `Nk Cells` regarding natural killer cells and `Dendritic Cell` regarding mDCs and pDCs.
 
 ```{r}
-relevant_factors <- c("Naive T Cell", "Follicular B Cell", "Nk Cells", "Dendritic Cell")
-plot_factor(muvi, factors=relevant_factors, group_by = "rna.celltype", color_by="rna.celltype") +
-  theme(
-    axis.text.x = element_text(color="black", angle=90, vjust=0.5, hjust=1)
-  )
+relevant_factors <-
+  c("Naive T Cell", "Follicular B Cell", "Nk Cells", "Dendritic Cell")
+plot_factor(muvi,
+            factors = relevant_factors,
+            group_by = "rna.celltype",
+            color_by = "rna.celltype") +
+  theme(axis.text.x = element_text(
+    color = "black",
+    angle = 90,
+    vjust = 0.5,
+    hjust = 1
+  ))
 ```
 
 ## Factor Loadings
 
-The factor loadings quantify the contribution of each feature to each latent factor, e.g. pathway.  
+The factor loadings quantify the contribution of each feature (gene) to each latent factor, e.g. pathway.  
 For the rest of the analysis we focus on the `Follicular B Cell` factor/pathway.  
 We first plot the distribution of all factor loadings in the RNA. Notice we only have non-negative weights, as the model has been constrained during training. Among others we notice several B cell markers such as `BANK1`, `IGHM`, `MS4A1`, `PAX5` and so on.
 
 ```{r}
-plot_weights(muvi, 
-  view = "rna", 
-  factors = "Follicular B Cell", 
-  nfeatures = 20, 
+plot_weights(
+  muvi,
+  view = "rna",
+  factors = "Follicular B Cell",
+  nfeatures = 20,
   text_size = 4
 )
 ```
@@ -99,9 +106,10 @@ plot_weights(muvi,
 We get a clearer picture of the relevant features for this particular factor by plotting only the top loadings.
 
 ```{r}
-plot_top_weights(muvi, 
-  view = "rna", 
-  factors = "Follicular B Cell", 
+plot_top_weights(
+  muvi,
+  view = "rna",
+  factors = "Follicular B Cell",
   sign = "positive",
   nfeatures = 20,
 )
@@ -112,9 +120,10 @@ plot_top_weights(muvi,
 Using `MOFA2` we may also assess the correlation of the factor scores with respect to the most relevant features. 
 
 ```{r}
-plot_data_scatter(muvi, 
-  view = "rna", 
-  factor = "Follicular B Cell", 
+plot_data_scatter(
+  muvi,
+  view = "rna",
+  factor = "Follicular B Cell",
   features = 6,
   color_by = "rna.celltype",
   add_lm = T,
@@ -127,9 +136,10 @@ plot_data_scatter(muvi,
 A powerful aspect of `MuVI` is pathway information transfer. In particular, we have only informed the RNA, but expect the ATAC view to be implicitly informed via shared factors. For instance, the corresponding gene symbol `CD74` and `BLK` are also deemed highly relevant for the `Follicular B Cell` pathway, even in the uninformed ATAC view. Potentially, we may even extract a `Follicular B Cell` ATAC signature from the top loadings.
 
 ```{r}
-plot_top_weights(muvi, 
-  view = "atac", 
-  factors = "Follicular B Cell", 
+plot_top_weights(
+  muvi,
+  view = "atac",
+  factors = "Follicular B Cell",
   sign = "positive",
   nfeatures = 20,
 )
@@ -140,12 +150,15 @@ plot_top_weights(muvi,
 As opposed to scatterplots which focus mostly on two dimensions, we may render heatmaps to visualise the overall patterns of each factor. In this case, we observe that B cells are clearly identifiable by significantly larger `Follicular B Cell` scores.
 
 ```{r }
-plot_data_heatmap(muvi, 
-  view = "rna", 
-  factor = "Follicular B Cell", 
+plot_data_heatmap(
+  muvi,
+  view = "rna",
+  factor = "Follicular B Cell",
   features = 25,
-  show_rownames = T, show_colnames = F, 
-  cluster_rows = T, cluster_cols = F,
+  show_rownames = T,
+  show_colnames = F,
+  cluster_rows = T,
+  cluster_cols = F,
   annotation_samples = "rna.celltype"
 )
 ```
@@ -153,10 +166,16 @@ plot_data_heatmap(muvi,
 As we already notice a very strong correlation of the `Follicular B Cell` with `BANK1` we may visualise a stripplot of the factor scores (y-axis) grouped by each cell type (x-axis) and coloured by the `BANK1` expression.
 
 ```{r}
-plot_factor(muvi, factors="Follicular B Cell", group_by = "rna.celltype", color_by="BANK1") + 
-  theme(
-    axis.text.x = element_text(color="black", angle=30, vjust=1, hjust=1)
-    )
+plot_factor(muvi,
+            factors = "Follicular B Cell",
+            group_by = "rna.celltype",
+            color_by = "BANK1") +
+  theme(axis.text.x = element_text(
+    color = "black",
+    angle = 30,
+    vjust = 1,
+    hjust = 1
+  ))
 ```
 
 # Non-linear Dimensionality Reduction
@@ -166,18 +185,18 @@ Similar to the principal components of a PCA decomposition, `MuVI` infers a comp
 ```{r message=FALSE}
 factors <- 1:20
 
-muvi <- run_umap(muvi, 
-  factors = factors, 
-  n_neighbors = 15,  
-  min_dist = 0.30
-)
+muvi <- run_umap(muvi,
+                 factors = factors,
+                 n_neighbors = 15,
+                 min_dist = 0.30)
 
-plot_dimred(muvi, 
-  method = "UMAP", 
-  color_by = "rna.celltype", 
-  label = TRUE, 
-  stroke=0.05, 
-  dot_size = 1, 
+plot_dimred(
+  muvi,
+  method = "UMAP",
+  color_by = "rna.celltype",
+  label = TRUE,
+  stroke = 0.05,
+  dot_size = 1,
   legend = FALSE
 )
 ```
@@ -186,12 +205,13 @@ We can then go over each latent factor, labelled by their corresponding gene set
 
 ```{r}
 for (i in relevant_factors) {
-  p <- plot_dimred(muvi, 
-    method = "UMAP", 
-    color_by = i, 
-    stroke = 0.05, 
+  p <- plot_dimred(
+    muvi,
+    method = "UMAP",
+    color_by = i,
+    stroke = 0.05,
     dot_size = 1
-  )
+  ) + ggtitle(i)
   print(p)
 }
 ```
@@ -207,23 +227,22 @@ As the test results indicate, not only can we ensure that each inferred latent f
 
 ```{r}
 
-msigdb.matrix <- msigdbr(
-  species = "Homo sapiens",
-  category = "C8"
-  ) %>% as.data.table %>% .[,id:=1] %>%
-  dcast(gs_name~gene_symbol, value.var="id", fill=0) %>% 
-  remove_rownames %>% 
-  column_to_rownames(var="gs_name")
+
+msigdb.matrix <- msigdbr(species = "Homo sapiens",
+                         category = "C8") %>% as.data.table %>% .[, id := 1] %>%
+  dcast(gs_name ~ gene_symbol, value.var = "id", fill = 0) %>%
+  remove_rownames %>%
+  column_to_rownames(var = "gs_name")
 
 # GSEA on positive weights only because we have no negative weights
-gsea.positive <- run_enrichment(muvi, 
-  feature.sets = msigdb.matrix == 1, 
-  view = "rna",
-  sign = "positive"
-)
+gsea.positive <- run_enrichment(muvi,
+                                feature.sets = msigdb.matrix == 1,
+                                view = "rna",
+                                sign = "positive")
 
 for (i in relevant_factors) {
-  p <- plot_enrichment(gsea.positive, factor = i, max.pathways = 15)
+  p <-
+    plot_enrichment(gsea.positive, factor = i, max.pathways = 15) + ggtitle(i)
   print(p)
 }
 
@@ -232,7 +251,8 @@ for (i in relevant_factors) {
 We may also inspect the top loadings that contributed to the test results.
 
 ```{r}
-plot_enrichment_detailed(gsea.positive,
+plot_enrichment_detailed(
+  gsea.positive,
   factor = "Follicular B Cell",
   max.genes = 10,
   max.pathways = 5
@@ -246,31 +266,31 @@ Again, the test results point towards the same underlying biological processes, 
 
 ```{r}
 
-msigdb.matrix <- msigdbr(
-  species = "Homo sapiens",
-  category = "C5",
-  subcategory = "BP"
-  ) %>% as.data.table %>% .[,id:=1] %>%
-  dcast(gs_name~gene_symbol, value.var="id", fill=0) %>% 
-  remove_rownames %>% 
-  column_to_rownames(var="gs_name")
+
+msigdb.matrix <- msigdbr(species = "Homo sapiens",
+                         category = "C5",
+                         subcategory = "BP") %>% as.data.table %>% .[, id := 1] %>%
+  dcast(gs_name ~ gene_symbol, value.var = "id", fill = 0) %>%
+  remove_rownames %>%
+  column_to_rownames(var = "gs_name")
 
 # GSEA on positive weights only because we have no negative weights
-gsea.positive <- run_enrichment(muvi, 
-  feature.sets = msigdb.matrix == 1, 
-  view = "rna",
-  sign = "positive"
-)
+gsea.positive <- run_enrichment(muvi,
+                                feature.sets = msigdb.matrix == 1,
+                                view = "rna",
+                                sign = "positive")
 
 for (i in relevant_factors) {
-  p <- plot_enrichment(gsea.positive, factor = i, max.pathways = 15)
+  p <-
+    plot_enrichment(gsea.positive, factor = i, max.pathways = 15) + ggtitle(i)
   print(p)
 }
 
 ```
 
 ```{r}
-plot_enrichment_detailed(gsea.positive,
+plot_enrichment_detailed(
+  gsea.positive,
   factor = "Follicular B Cell",
   max.genes = 10,
   max.pathways = 5

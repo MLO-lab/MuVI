@@ -1,51 +1,117 @@
-[build-system]
-requires = ["poetry_core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
-
 [tool.poetry]
 name = "muvi"
 version = "0.1.0"
-description = "MuVI, a multi-view latent variable model with domain-informed structured sparsity, that integrates noisy domain expertise in terms of feature sets."
+description = "MuVI: A multi-view latent variable model with domain-informed structured sparsity for integrating noisy feature sets."
 readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
-# license = "MIT"
-repository = "https://github.com/MLO-lab/MuVI"
 homepage = "https://github.com/MLO-lab/MuVI"
+repository = "https://github.com/MLO-lab/MuVI"
+# TODO: documentation = ""
+keywords = ["multi-view", "multi-omics", "feature sets", "latent variable model", "structured sparsity", "variational inference", "single-cell"]
 
-# Pypi classifiers: https://pypi.org/classifiers/
-classifiers = []
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
-python = ">=3.8.1,<3.11"
-pandas = "^1.5.3"
-scikit-learn = "^1.2.1"
-scipy = "^1.8.0"
-statsmodels = "^0.13.5"
-pyro-ppl = "^1.8.4"
-torch = "^1.13.1"
-scanpy = "^1.9.1"
-seaborn = "^0.12.2"
-tqdm = "^4.64.1"
-numba = "^0.56.4"
-mudata = "^0.2.1"
-numpy = "~1.23.5"
-dill = "^0.3.6"
+python = ">=3.9,<3.11"
+numpy = "^1.26.1"
+pandas = "^2.1.1"
+scikit-learn = "^1.3.1"
+scipy = "^1.11.3"
+statsmodels = "^0.14.0"
+seaborn = "^0.13.0"
+torch = "^2.1.0"
+pyro-ppl = "^1.8.6"
+scanpy = "^1.9.5"
+mudata = "^0.2.3"
+dill = "^0.3.7"
+tqdm = "^4.66.1"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.2.1"
 pre-commit = "2.20.0"
 jupyter = "^1.0.0"
 ipython = "^8.10.0"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.4.2"
+pytest-cov = "^4.0"
+
+[tool.poetry.group.lint.dependencies]
 black = "^23.1.0"
 flake8 = "^6.0.0"
 isort = "^5.12.0"
+mypy = ">=1.6.0"
+
+
+[tool.ruff]
+fix = true
+unfixable = [
+    "ERA", # do not autoremove commented out code
+]
+target-version = "py39"
+line-length = 88
+extend-select = [
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "ERA", # flake8-eradicate/eradicate
+    "I",   # isort
+    "N",   # pep8-naming
+    "PIE", # flake8-pie
+    "PGH", # pygrep
+    "RUF", # ruff checks
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+    "TID", # flake8-tidy-imports
+    "UP",  # pyupgrade
+]
+ignore = [
+    "B904", # use 'raise ... from err'
+    "B905", # use explicit 'strict=' parameter with 'zip()'
+    "N818", #  Exception name should be named with an Error suffix
+]
+extend-exclude = [
+    "docs/*",
+    "tests/*",
+]
+
+[tool.ruff.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.isort]
+force-single-line = true
+lines-between-types = 1
+lines-after-imports = 2
+known-first-party = ["muvi"]
 
 [tool.black]
-target-version = ["py38"]
-line-length = 88
-color = true
+target-version = ["py39"]
+preview = true
 
-[tool.isort]
-include_trailing_comma = true
-multi_line_output = 3
-profile = "black"
+
+[tool.mypy]
+files = "muvi, tests"
+mypy_path = "muvi"
+namespace_packages = true
+explicit_package_bases = true
+show_error_codes = true
+strict = true
+enable_error_code = [
+    "ignore-without-code",
+    "redundant-expr",
+    "truthy-bool",
+]
+exclude = [
+    "tests",
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover"
+]

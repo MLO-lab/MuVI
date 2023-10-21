@@ -15,7 +15,7 @@ We suggest using [conda](https://docs.conda.io/en/latest/miniconda.html) to mana
 1. Create a python environment in `conda`:
 
 ```bash
-conda create -n muvi python=3.8
+conda create -n muvi python=3.9
 ```
 
 2. Activate freshly created environment:
@@ -41,7 +41,7 @@ git clone https://github.com/MLO-lab/MuVI.git
 2. Create a python environment in `conda`:
 
 ```bash
-conda create -n muvi python=3.8
+conda create -n muvi python=3.9
 ```
 
 3. Activate freshly created environment:

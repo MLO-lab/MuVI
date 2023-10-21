@@ -2,15 +2,17 @@
 
 import logging
 import logging.config
+
 from pathlib import Path
 
-from .core import *  # noqa: F401, F403
-from .tools import external as ext
-from .tools import feature_sets as fs
-from .tools import load
-from .tools import plotting as pl
-from .tools import save
-from .tools import utils as tl
+from muvi.core import *  # noqa: F403
+from muvi.tools import external as ext
+from muvi.tools import feature_sets as fs
+from muvi.tools import load
+from muvi.tools import plotting as pl
+from muvi.tools import save
+from muvi.tools import utils as tl
+
 
 logging.config.fileConfig(
     Path(__file__).resolve().parent / "log.conf",

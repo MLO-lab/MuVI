@@ -1,6 +1,9 @@
 import logging
+
 from pathlib import Path
-from typing import List, Union
+from typing import List
+from typing import Optional
+from typing import Union
 
 import anndata as ad
 import dill as pickle
@@ -10,6 +13,7 @@ import pandas as pd
 import pyro
 import scanpy as sc
 import scipy
+
 from scipy.optimize import linprog
 from sklearn.metrics import mean_squared_error
 from statsmodels.stats import multitest
@@ -18,6 +22,7 @@ from tqdm import tqdm
 from muvi.core.index import _normalize_index
 from muvi.core.models import MuVI
 from muvi.tools.cache import Cache
+
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +181,7 @@ def _recon_error(
 
     if subsample is not None and subsample > 0 and subsample < len(sample_idx):
         logger.info(
-            f"Estimating `{metric_label}` with a random sample of "
-            f"{subsample} samples."
+            f"Estimating `{metric_label}` with a random sample of {subsample} samples."
         )
         sample_idx = np.random.choice(sample_idx, subsample, replace=False)
 
@@ -191,7 +195,7 @@ def _recon_error(
 
     model_cache = setup_cache(model)
 
-    n_samples = list(ys.values())[0].shape[0]
+    n_samples = next(iter(ys.values())).shape[0]
     if subsample is None and n_samples > 10000 and (factor_wise or cov_wise):
         logger.warning(
             f"Computing `{metric_label}` with `{n_samples}` samples, "
@@ -347,7 +351,6 @@ def variance_explained(
     """
 
     def _r2(y_true, y_pred):
-        # return r2_score(y_true, y_pred)
         ss_res = np.nansum(np.square(y_true - y_pred))
         ss_tot = np.nansum(np.square(y_true))
         return 1.0 - (ss_res / ss_tot)
@@ -555,7 +558,7 @@ def test(
 
         with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = np.divide(mean_diff, denom)
-        prob = t_stat.apply(lambda t: scipy.stats.t.sf(np.abs(t), df) * 2)
+        prob = t_stat.apply(lambda t: scipy.stats.t.sf(np.abs(t), df) * 2)  # noqa: B023
 
         t_stat_dict[feature_set] = t_stat
         prob_dict[feature_set] = prob
@@ -655,7 +658,12 @@ def dendrogram(model, groupby, **kwargs):
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
 
 
-def from_adata(adata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
+def from_adata(
+    adata,
+    prior_mask_key: Optional[str] = None,
+    covariate_key: Optional[str] = None,
+    **kwargs,
+):
     observations = [adata.to_df().copy()]
     prior_masks = None
     if prior_mask_key is not None:
@@ -671,7 +679,12 @@ def from_adata(adata, prior_mask_key: str = None, covariate_key: str = None, **k
     return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
 
 
-def from_mdata(mdata, prior_mask_key: str = None, covariate_key: str = None, **kwargs):
+def from_mdata(
+    mdata,
+    prior_mask_key: Optional[str] = None,
+    covariate_key: Optional[str] = None,
+    **kwargs,
+):
     view_names = sorted(mdata.mod.keys())
     observations = {
         view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
@@ -762,7 +775,7 @@ def save(model, dir_path="."):
     # fixes error of anndata that renames .obsm index
     for adata in [factor_adata, cov_adata]:
         if adata is not None:
-            for key in adata.obsm.keys():
+            for key in adata.obsm:
                 if isinstance(adata.obsm[key], pd.DataFrame):
                     adata.obsm[key].index = adata.obs_names.copy()
 
@@ -811,14 +824,14 @@ def load(dir_path=".", with_params=True):
         model._cache.cov_adata = cov_adata
     if with_params:
         pyro.get_param_store().load(params_path)
-    # model = pyro.module("MuVI", model, update_module_params=True)
+    # model = pyro.module("MuVI", model, update_module_params=True)  # noqa: ERA001
     return model
 
 
-def optim_perm(A):
-    n, n = A.shape
+def optim_perm(matrix):
+    n, n = matrix.shape
     res = linprog(
-        -A.ravel(),
+        -matrix.ravel(),
         A_eq=np.r_[
             np.kron(np.identity(n), np.ones((1, n))),
             np.kron(np.ones((1, n)), np.identity(n)),

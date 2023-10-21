@@ -1,5 +1,7 @@
 """Collection of plotting functions."""
 import logging
+
+from typing import Optional
 from typing import Union
 
 import matplotlib.pyplot as plt
@@ -7,10 +9,13 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import seaborn as sns
+
 from sklearn.metrics import confusion_matrix as sklearn_cf
 
 import muvi
+
 from muvi.core.index import _normalize_index
+
 
 sns.set_theme()
 sns.set_style("whitegrid")
@@ -29,9 +34,9 @@ PL_TYPES = [HEATMAP, MATRIXPLOT, DOTPLOT, TRACKSPLOT, VIOLIN, STACKED_VIOLIN]
 
 def savefig_or_show(
     writekey: str,
-    show: bool = None,
-    dpi: int = None,
-    ext: str = None,
+    show: Optional[bool] = None,
+    dpi: Optional[int] = None,
+    ext: Optional[str] = None,
     save: Union[bool, str, None] = None,
 ):
     return sc.pl._utils.savefig_or_show(writekey, show, dpi, ext, save)
@@ -128,7 +133,7 @@ def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
 def variance_explained(
     model,
     top=50,
-    show: bool = None,
+    show: Optional[bool] = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
@@ -185,7 +190,7 @@ def variance_explained_grouped(
     groups=None,
     kind="bar",
     stacked=True,
-    show: bool = None,
+    show: Optional[bool] = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
@@ -244,7 +249,7 @@ def factors_overview(
     prior_only=False,
     adjusted=False,
     top=25,
-    show: bool = None,
+    show: Optional[bool] = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
@@ -278,7 +283,7 @@ def factors_overview(
     if adjusted:
         p_col = "p_adj"
 
-    p_df = data[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict.keys()]]
+    p_df = data[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict]]
     if p_df.isna().all(None) and sig_only:
         raise ValueError("No test results found in model cache, rerun `muvi.tl.test`.")
 
@@ -318,7 +323,7 @@ def factors_overview(
     )
     g.set_title(
         rf"Overview top factors in {view_idx} $\alpha = {alpha}$"
-        # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"
+        # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"  # noqa: ERA001
     )
     g.set(xlabel=r"$R^2$")
     savefig_or_show(f"overview_view_{view_idx}", show=show, save=save)
@@ -333,7 +338,7 @@ def inspect_factor(
     top=25,
     ranked=True,
     figsize=None,
-    show: bool = None,
+    show: Optional[bool] = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):
@@ -429,7 +434,7 @@ def inspect_factor(
                 labeled_data = (
                     data.iloc[-top:].sort_values(loading_col, ascending=False).copy()
                 )
-                labeled_data
+
                 labeled_data["is_positive"] = labeled_data[loading_col] > 0
 
                 n_positive = labeled_data["is_positive"].sum()
@@ -447,9 +452,8 @@ def inspect_factor(
                         ::-1
                     ].tolist()
                 )
-                labeled_data
 
-                for i, row in labeled_data.iterrows():
+                for _, row in labeled_data.iterrows():
                     g.text(
                         row["x_text_pos"],
                         row["y_text_pos"],
@@ -461,7 +465,7 @@ def inspect_factor(
                         "",
                         (row["x_arrow_pos"], row["y_arrow_pos"]),
                         xytext=(row["x_text_pos"], row["y_text_pos"]),
-                        # bbox=dict(boxstyle="round", alpha=0.1),
+                        # bbox=dict(boxstyle="round", alpha=0.1),  # noqa: ERA001
                         arrowprops={
                             "arrowstyle": "simple,tail_width=0.01,head_width=0.15",
                             "color": "black",
@@ -511,19 +515,14 @@ def confusion_matrix(
     blanks = ["" for i in range(cf.size)]
 
     if group_names and len(group_names) == cf.size:
-        group_labels = ["{}\n".format(value) for value in group_names]
+        group_labels = [f"{value}\n" for value in group_names]
     else:
         group_labels = blanks
 
-    if count:
-        group_counts = ["{0:0.0f}\n".format(value) for value in cf.flatten()]
-    else:
-        group_counts = blanks
+    group_counts = [f"{value:0.0f}\n" for value in cf.flatten()] if count else blanks
 
     if percent:
-        group_percentages = [
-            "{0:.2%}".format(value) for value in cf.flatten() / np.sum(cf)
-        ]
+        group_percentages = [f"{value:.2%}" for value in cf.flatten() / np.sum(cf)]
     else:
         group_percentages = blanks
 
@@ -544,13 +543,14 @@ def confusion_matrix(
             precision = cf[1, 1] / sum(cf[:, 1])
             recall = cf[1, 1] / sum(cf[1, :])
             f1_score = 2 * precision * recall / (precision + recall)
-            stats_text = "\n\nAccuracy={:0.3f}".format(
-                accuracy
-            ) + "\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}".format(
-                precision, recall, f1_score
+            stats_text = (
+                f"\n\nAccuracy={accuracy:0.3f}"
+                + "\nPrecision={:0.3f}\nRecall={:0.3f}\nF1 Score={:0.3f}".format(
+                    precision, recall, f1_score
+                )
             )
         else:
-            stats_text = "\n\nAccuracy={:0.3f}".format(accuracy)
+            stats_text = f"\n\nAccuracy={accuracy:0.3f}"
     else:
         stats_text = ""
 
@@ -586,7 +586,6 @@ def confusion_matrix(
     plt.title(title)
 
     return g
-    # return accuracy, precision, recall, f1_score
 
 
 def factor_activity(
@@ -647,7 +646,6 @@ def factor_activity(
     g.set_xlabel("")
     joint_handles, joint_labels = g.get_legend_handles_labels()
     g.legend(
-        # loc="lower right",
         handles=[h for i, h in enumerate(joint_handles) if i not in [0, 5]],
         labels=[h for i, h in enumerate(joint_labels) if i not in [0, 5]],
     )
@@ -806,7 +804,7 @@ def rank(model, n_factors=10, pl_type=None, sep_groups=True, **kwargs):
         g = _pl["mainplot_ax"]
         ymin = 0.0
         ymax = n_groups
-    if pl_type == DOTPLOT or pl_type == STACKED_VIOLIN:
+    if pl_type in (DOTPLOT, STACKED_VIOLIN):
         g = _pl["mainplot_ax"]
         ymin = -0.5
         ymax = n_groups + 0.5
@@ -846,7 +844,7 @@ def stripplot(
     groups=None,
     include_rest=True,
     rot: int = 45,
-    show: bool = None,
+    show: Optional[bool] = None,
     save: Union[bool, str, None] = None,
     **kwargs,
 ):

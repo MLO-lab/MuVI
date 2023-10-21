@@ -1,10 +1,12 @@
 import logging
+
 from pathlib import Path
 
 import h5py
 import numpy as np
 
 from muvi.tools.utils import variance_explained
+
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,10 @@ def save_as_hdf5(
     path = Path(path)
     if path.exists():
         logger.warning(f"`{path}` already exists, overwriting.")
-        # path.unlink()
 
     default_group_name = "group_0"
     logger.info(
-        "Setting default group name to "
-        f"`{default_group_name}` for single group data."
+        f"Setting default group name to `{default_group_name}` for single group data."
     )
     logger.info("Computing variance explained.")
     r2_view, r2_factor, _ = variance_explained(
@@ -70,7 +70,7 @@ def save_as_hdf5(
         default_group_name, data=model.sample_names.tolist()
     )
 
-    # factors (sorted)
+    # sorted factors
     r2_order = r2_factor.sum(1).argsort().to_numpy()[::-1]
     f.create_group("factors").create_dataset(
         default_group_name, data=model.factor_names[r2_order].tolist()
@@ -112,12 +112,12 @@ def save_as_hdf5(
     f.create_dataset("training_opts", data=training_opts)
 
     # expectations
-    f_W = f.create_group("expectations/W")
-    f_Z = f.create_group("expectations/Z")
+    f_w = f.create_group("expectations/W")
+    f_z = f.create_group("expectations/Z")
 
     for vn in model.view_names:
-        f_W.create_dataset(vn, data=model.get_factor_loadings()[vn][r2_order, :])
-    f_Z.create_dataset(
+        f_w.create_dataset(vn, data=model.get_factor_loadings()[vn][r2_order, :])
+    f_z.create_dataset(
         default_group_name, data=model.get_factor_scores()[:, r2_order].T
     )
 

@@ -9,6 +9,7 @@
 backup/
 results/
 figures/
+data/
 examples_dev/
 projects/
 logs/

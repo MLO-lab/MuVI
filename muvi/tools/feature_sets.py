@@ -1,13 +1,20 @@
 # Highly inspired by https://github.com/krassowski/gsea-api
 import logging
+
 from collections import Counter
-from functools import lru_cache
 from pathlib import Path
-from typing import Collection, Dict, Iterable, Set, Tuple
+from typing import Collection
+from typing import Dict
+from typing import Iterable
+from typing import Optional
+from typing import Set
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
+
 from sklearn.metrics import pairwise_distances
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +31,7 @@ class FeatureSet:
         self.description = description
 
         if self.empty:
-            logger.warning(f"FeatureSet {repr(name)} is empty.")
+            logger.warning(f"FeatureSet {name!r} is empty.")
 
         redundant_features = None
 
@@ -36,7 +43,7 @@ class FeatureSet:
             }
 
             logger.warning(
-                f"FeatureSet {repr(name)} received a non-unique "
+                f"FeatureSet {name!r} received a non-unique "
                 f"collection of features; redundant features: {redundant_features}"
             )
 
@@ -51,19 +58,17 @@ class FeatureSet:
 
     def __repr__(self) -> str:
         features = (
-            ": " + (", ".join(sorted(self.features))) if len(self.features) < 5 else ""
+            ": " + ", ".join(sorted(self.features)) if len(self.features) < 5 else ""
         )
-        return f"<FeatureSet {repr(self.name)} with {len(self)} features{features}>"
+        return f"<FeatureSet {self.name!r} with {len(self)} features{features}>"
 
     def __iter__(self) -> Iterable[str]:
         return iter(self.features)
 
     def __eq__(self, other: "FeatureSet") -> bool:
-        # return self.name == other.name and self.features == other.features
         return self.features == other.features
 
     def __hash__(self) -> int:
-        # return hash((self.name, self.features))
         return hash(self.features)
 
     def __and__(self, other: "FeatureSet") -> "FeatureSet":
@@ -124,7 +129,7 @@ class FeatureSets:
             }
 
             logger.warning(
-                f"FeatureSets {repr(name)} received a non-unique "
+                f"FeatureSets {name!r} received a non-unique "
                 "collection of feature sets; redundant feature sets: "
                 f"{redundant_feature_sets}"
             )
@@ -140,12 +145,10 @@ class FeatureSets:
         return int(np.median([len(fs) for fs in self.feature_sets]))
 
     @property
-    @lru_cache()
     def features(self) -> frozenset:
         return frozenset.union(*[fs.features for fs in self.feature_sets])
 
     @property
-    @lru_cache()
     def feature_set_by_name(self) -> dict:
         return {feature_set.name: feature_set for feature_set in self.feature_sets}
 
@@ -160,12 +163,12 @@ class FeatureSets:
 
     def __repr__(self) -> str:
         feature_sets = (
-            ": " + (", ".join(sorted({fs.name for fs in self.feature_sets})))
+            ": " + ", ".join(sorted({fs.name for fs in self.feature_sets}))
             if len(self.feature_sets) < 5
             else ""
         )
         return (
-            f"<FeatureSets {repr(self.name)} with {len(self)} "
+            f"<FeatureSets {self.name!r} with {len(self)} "
             + f"feature sets{feature_sets}>"
         )
 
@@ -246,7 +249,7 @@ class FeatureSets:
             name=self.name,
         )
 
-    def trim(self, min_count: int = 1, max_count: int = None):
+    def trim(self, min_count: int = 1, max_count: Optional[int] = None):
         """Trim feature sets by min/max size.
 
         Parameters
@@ -285,7 +288,7 @@ class FeatureSets:
         features: Iterable[str],
         min_fraction: float = 0.5,
         min_count: int = 1,
-        keep: Iterable[str] = None,
+        keep: Optional[Iterable[str]] = None,
         subset: bool = True,
     ):
         """Filter feature sets.
@@ -336,7 +339,7 @@ class FeatureSets:
         return filtered_feature_sets
 
     def to_mask(
-        self, features: Iterable[str] = None, sort: bool = True
+        self, features: Optional[Iterable[str]] = None, sort: bool = True
     ) -> pd.DataFrame:
         """Convert feature sets to a mask.
 
@@ -388,7 +391,7 @@ class FeatureSets:
         if metric not in ["jaccard", "cosine"]:
             logger.warning(
                 f"Similarity matrix for `{metric}` might be negative. "
-                f"Recommended metrics are `jaccard` or `cosine`."
+                "Recommended metrics are `jaccard` or `cosine`."
             )
 
         self_mask = self.to_mask()
@@ -475,7 +478,7 @@ class FeatureSets:
     def find_similar_pairs(
         self,
         observations: pd.DataFrame = None,
-        metric: str = None,
+        metric: Optional[str] = None,
         similarity_threshold: float = 0.8,
     ) -> Set[Tuple[str, str]]:
         """Find similar pairs of feature sets.
@@ -549,7 +552,7 @@ class FeatureSets:
     def merge_similar(
         self,
         observations: pd.DataFrame = None,
-        metric: str = None,
+        metric: Optional[str] = None,
         similarity_threshold: float = 0.8,
         iteratively: bool = True,
     ):
@@ -625,7 +628,7 @@ class FeatureSets:
         return {fs.name: fs.features for fs in self.feature_sets}
 
 
-def from_gmt(path: Path, name: str = None, **kwargs) -> FeatureSets:
+def from_gmt(path: Path, name: Optional[str] = None, **kwargs) -> FeatureSets:
     """Create a FeatureSets object from a GMT file.
 
     Parameters
@@ -655,7 +658,7 @@ def from_gmt(path: Path, name: str = None, **kwargs) -> FeatureSets:
 
 def from_dict(
     d: Dict[str, Iterable[str]],
-    name: str = None,
+    name: Optional[str] = None,
     **kwargs,
 ) -> FeatureSets:
     """Create a FeatureSets object from a dictionary.
@@ -679,10 +682,10 @@ def from_dict(
 
 def from_dataframe(
     df: pd.DataFrame,
-    name: str = None,
+    name: Optional[str] = None,
     name_col: str = "name",
     features_col: str = "features",
-    desc_col: str = None,
+    desc_col: Optional[str] = None,
     **kwargs,
 ) -> FeatureSets:
     """Create a FeatureSets object from a DataFrame.

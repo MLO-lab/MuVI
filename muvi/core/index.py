@@ -2,6 +2,7 @@ import logging
 
 import numpy as np
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,10 +13,7 @@ def _normalize_index(indexer, index, as_idx=True):
     if indexer is None:
         raise IndexError("None index.")
     if isinstance(indexer, str):
-        if indexer == "all":
-            indexer = range(len(index))
-        else:
-            indexer = [index.get_loc(indexer)]
+        indexer = range(len(index)) if indexer == "all" else [index.get_loc(indexer)]
     # if single integer, put to list
     if isinstance(indexer, (np.integer, int)):
         indexer = [indexer]

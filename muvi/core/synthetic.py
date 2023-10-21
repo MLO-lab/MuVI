@@ -2,11 +2,15 @@
 import itertools
 import logging
 import math
-from typing import List, Tuple
+
+from typing import List
+from typing import Optional
+from typing import Tuple
 
 import anndata as ad
 import mudata as mu
 import numpy as np
+
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +19,17 @@ class DataGenerator:
     def __init__(
         self,
         n_samples: int = 1000,
-        n_features: List[int] = None,
-        likelihoods: List[str] = None,
+        n_features: Optional[List[int]] = None,
+        likelihoods: Optional[List[str]] = None,
         n_fully_shared_factors: int = 2,
         n_partially_shared_factors: int = 15,
         n_private_factors: int = 3,
-        factor_size_params: Tuple[float] = None,
+        factor_size_params: Optional[Tuple[float]] = None,
         factor_size_dist: str = "uniform",
         n_active_factors: float = 1.0,
         n_covariates: int = 0,
         n_response: int = 0,
-        nmf: List[bool] = None,
+        nmf: Optional[List[bool]] = None,
         **kwargs,
     ) -> None:
         """Generate synthetic data
@@ -201,7 +205,7 @@ class DataGenerator:
             all_combs = False
         if all_combs:
             logger.warning(
-                f"Generating all possible binary combinations of "
+                "Generating all possible binary combinations of "
                 f"{self.n_views} variables."
             )
             self.n_fully_shared_factors = 1
@@ -210,7 +214,7 @@ class DataGenerator:
                 2**self.n_views - 2 - self.n_private_factors
             )
             logger.warning(
-                f"New factor configuration: "
+                "New factor configuration: "
                 f"{self.n_fully_shared_factors} fully shared, "
                 f"{self.n_partially_shared_factors} partially shared, "
                 f"{self.n_private_factors} private factors."
@@ -267,7 +271,10 @@ class DataGenerator:
         return 1.0 / (1 + np.exp(-x))
 
     def generate(
-        self, seed: int = None, all_combs: bool = False, overwrite: bool = False
+        self,
+        seed: Optional[int] = None,
+        all_combs: bool = False,
+        overwrite: bool = False,
     ) -> None:
         rng = np.random.default_rng()
 
@@ -301,13 +308,11 @@ class DataGenerator:
 
         if any(self.nmf):
             z = np.abs(z)
-            # z *= z > 0
 
         if self.n_covariates > 0:
             x = rng.standard_normal((self.n_samples, self.n_covariates))
             if any(self.nmf):
                 x = np.abs(x)
-                # x *= x > 0
 
         betas = []
         ws = []
@@ -326,11 +331,15 @@ class DataGenerator:
             w_mask = np.zeros(w_shape)
 
             fraction_active_features = {
-                "gamma": lambda shape, scale: (
-                    rng.gamma(shape, scale, self.n_factors) + 20
-                )
-                / n_features,
-                "uniform": lambda low, high: rng.uniform(low, high, self.n_factors),
+                "gamma": (
+                    lambda shape, scale, n_features=n_features: (
+                        rng.gamma(shape, scale, self.n_factors) + 20
+                    )
+                    / n_features
+                ),
+                "uniform": lambda low, high, n_features=n_features: rng.uniform(
+                    low, high, self.n_factors
+                ),
             }[self.factor_size_dist](
                 self.factor_size_params[m][0], self.factor_size_params[m][1]
             )
@@ -349,9 +358,6 @@ class DataGenerator:
 
             if self.nmf[m]:
                 w = np.abs(w)
-                # w *= w > 0
-                # # update mask
-                # w_mask[np.abs(w) < tiny_w_threshold] = 0.0
 
             y_loc = np.matmul(z, w)
 
@@ -361,7 +367,6 @@ class DataGenerator:
                 beta = rng.standard_normal(beta_shape) / 10
                 if self.nmf[m]:
                     beta = np.abs(beta)
-                    # beta *= beta > 0
                 y_loc = y_loc + np.matmul(x, beta)
                 betas.append(beta)
 
@@ -372,12 +377,9 @@ class DataGenerator:
                 y = rng.normal(loc=y_loc, scale=sigma)
                 if self.nmf[m]:
                     y = np.abs(y)
-                    # y *= y > 0
             elif self.likelihoods[m] == "bernoulli":
                 y = rng.binomial(1, self.sigmoid(y_loc))
             elif self.likelihoods[m] == "poisson":
-                # rate = np.log1p(np.exp(-np.abs(y_loc))) + np.maximum(y_loc, 0)
-                # rate = y_loc * (y_loc > 0)
                 rate = np.exp(y_loc)
                 y = rng.poisson(rate)
 
@@ -523,7 +525,7 @@ class DataGenerator:
         # remove random fraction
         mask *= rng.choice([0, 1], mask.shape, p=[random_fraction, 1 - random_fraction])
 
-        view_feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+        view_feature_offsets = [0, *np.cumsum(self.n_features).tolist()]
         masks = []
         for offset_idx in range(len(view_feature_offsets) - 1):
             start_offset = view_feature_offsets[offset_idx]

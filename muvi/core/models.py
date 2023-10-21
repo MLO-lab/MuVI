@@ -1,21 +1,33 @@
 import logging
 import time
-from typing import Callable, Dict, List, Optional, Union
+
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 import numpy as np
 import pandas as pd
 import pyro
 import pyro.distributions as dist
 import torch
+
 from pandas.api.types import is_string_dtype
 from pyro.distributions import constraints
-from pyro.infer.autoguide.guides import deep_getattr, deep_setattr
-from pyro.nn import PyroModule, PyroParam
-from pyro.optim import Adam, ClippedAdam
-from torch.utils.data import DataLoader, Dataset
+from pyro.infer.autoguide.guides import deep_getattr
+from pyro.infer.autoguide.guides import deep_setattr
+from pyro.nn import PyroModule
+from pyro.nn import PyroParam
+from pyro.optim import Adam
+from pyro.optim import ClippedAdam
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from .index import _normalize_index
+from muvi.core.index import _normalize_index
+
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +50,10 @@ class DictDataset(Dataset):
         return self._len
 
     def __getitem__(self, index):
-        return {
-            **{self.idx_key: index},
-            **{k: v[index] for k, v in self.tensor_dict.items()},
-        }
+        item = {self.idx_key: index}
+        for k, v in self.tensor_dict.items():
+            item[k] = v[index]
+        return item
 
 
 class MuVI(PyroModule):
@@ -56,7 +68,6 @@ class MuVI(PyroModule):
         likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
         reg_hs: bool = True,
         nmf: Optional[Union[Dict[str, bool], List[bool]]] = None,
-        n_latent_clusters: int = 1,
         device: str = "cuda",
     ):
         """MuVI module.
@@ -93,9 +104,6 @@ class MuVI(PyroModule):
         nmf : Union[Dict[str, bool], List[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
-        n_latent_clusters : int, optional
-            Number of latent clusters to be inferred by a GMM prior,
-            by default 1 (standard normal prior)
         device : str, optional
             Device to run computations on, by default "cuda" (GPU)
         """
@@ -117,13 +125,6 @@ class MuVI(PyroModule):
             )
             self.reg_hs = True
 
-        self.n_latent_clusters = max(1, int(n_latent_clusters))
-        if self.n_latent_clusters > 1:
-            logger.warning("Using multiple latent clusters is an experimental feature.")
-        self.cluster_names = pd.Index(
-            [f"cluster_{c}" for c in range(self.n_latent_clusters)]
-        )
-
         self.device = self._setup_device(device)
         self.to(self.device)
 
@@ -131,7 +132,7 @@ class MuVI(PyroModule):
         self._guide = None
         self._built = False
         self._trained = False
-        self._training_log = {}
+        self._training_log: Dict[str, Any] = {}
         self._cache = None
 
     @property
@@ -179,8 +180,7 @@ class MuVI(PyroModule):
             logger.warning("No view names provided!")
             if isinstance(observations, list):
                 logger.info(
-                    "Setting the name of each view to `view_idx` "
-                    "for list observations."
+                    "Setting the name of each view to `view_idx` for list observations."
                 )
                 view_names = [f"view_{m}" for m in range(len(observations))]
             if isinstance(observations, dict):
@@ -196,7 +196,7 @@ class MuVI(PyroModule):
 
         _view_names = []
         for vn in view_names:
-            if vn not in observations.keys():
+            if vn not in observations:
                 logger.warning(f"View `{vn}` not found in observations, skipping.")
             else:
                 _view_names.append(vn)
@@ -349,8 +349,7 @@ class MuVI(PyroModule):
 
         if not (0 < confidence < 1.0):
             raise ValueError(
-                "Invalid prior confidence, "
-                "please provide a positive value less than 1."
+                "Invalid prior confidence, please provide a positive value less than 1."
             )
 
         # if list convert to dict
@@ -478,6 +477,8 @@ class MuVI(PyroModule):
     def _setup_nmf(self, nmf):
         if nmf is None:
             nmf = [False for _ in range(self.n_views)]
+        if isinstance(nmf, bool):
+            nmf = [nmf for _ in range(self.n_views)]
         if isinstance(nmf, list):
             nmf = {self.view_names[m]: _nmf for m, _nmf in enumerate(nmf)}
         nmf = {vn: nmf.get(vn, False) for vn in self.view_names}
@@ -534,7 +535,7 @@ class MuVI(PyroModule):
     ):
         if view_idx is None and isinstance(feature_idx, dict):
             view_idx = []
-            for key in feature_idx.keys():
+            for key in feature_idx:
                 vi = key
                 if isinstance(vi, int):
                     vi = self.view_names[vi]
@@ -630,18 +631,6 @@ class MuVI(PyroModule):
     ):
         return self._get_shared_attr(
             attr, sample_idx, self.sample_names, other_idx, other_names, as_df
-        )
-
-    def _get_cluster_attr(
-        self,
-        attr,
-        cluster_idx,
-        other_idx,
-        other_names,
-        as_df,
-    ):
-        return self._get_shared_attr(
-            attr, cluster_idx, self.cluster_names, other_idx, other_names, as_df
         )
 
     def get_observations(
@@ -743,7 +732,7 @@ class MuVI(PyroModule):
                 for vn, obs in obs_hat.items()
             }
 
-        for vn in obs_hat.keys():
+        for vn in obs_hat:
             obs_hat[vn] = self._mode(obs_hat[vn], self.likelihoods[vn])
 
         if as_df:
@@ -786,7 +775,7 @@ class MuVI(PyroModule):
 
         obs = self.get_observations(view_idx, sample_idx, feature_idx, as_df=True)
         obs_hat = self.get_reconstructed(view_idx, sample_idx, feature_idx, as_df=True)
-        obs_imputed = {vn: obs[vn].fillna(obs_hat[vn]) for vn in obs.keys()}
+        obs_imputed = {vn: obs[vn].fillna(obs_hat[vn]) for vn in obs}
 
         if not as_df:
             obs_imputed = {
@@ -910,63 +899,6 @@ class MuVI(PyroModule):
             as_df=as_df,
         )
 
-    def get_mixture_centers(
-        self, cluster_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
-    ):
-        """Get mixture centers.
-
-        Parameters
-        ----------
-        cluster_idx : Index, optional
-            Cluster index, by default "all"
-        factor_idx : Index, optional
-            Factor index, by default "all"
-        as_df : bool, optional
-            Whether to return a pandas dataframe,
-            by default False
-
-        Returns
-        -------
-        Union[np.ndarray, pd.DataFrame]
-            A single np.ndarray or pd.DataFrame of shape `n_clusters` x `n_factors`.
-        """
-        if self.n_latent_clusters < 2:
-            raise AttributeError(
-                "Model trained on a single latent cluster! "
-                "Rerun with `n_latent_clusters` > 1."
-            )
-        self._raise_untrained_error()
-
-        return self._get_cluster_attr(
-            self._guide.get_mixture_centers(),
-            cluster_idx,
-            other_idx=factor_idx,
-            other_names=self.factor_names,
-            as_df=as_df,
-        )
-
-    def get_assignments(self, as_probabilities: bool = False, as_df: bool = False):
-        mixture_weights = torch.Tensor(self._guide.get_mixture_weights())
-        mixture_centers = torch.Tensor(self.get_mixture_centers())
-        z = torch.Tensor(self.get_factor_scores())
-        normal_dists = [
-            dist.MultivariateNormal(mixture_centers[c], torch.eye(self.n_factors))
-            for c in range(self.n_latent_clusters)
-        ]
-        log_probs = torch.stack([nd.log_prob(z) for nd in normal_dists])
-        probs = mixture_weights.T * torch.exp(log_probs)
-        probs = probs / probs.sum(dim=0, keepdim=True)
-        probs = probs.cpu().detach().numpy().T
-        assignments = np.argmax(probs, axis=1)
-        if as_df:
-            probs = pd.DataFrame(
-                probs, index=self.sample_names, columns=self.cluster_names
-            )
-            assignments = pd.Series(assignments, index=self.sample_names)
-        if as_probabilities:
-            return probs
-        return assignments
-
     def get_factor_scores(
         self, sample_idx: Index = "all", factor_idx: Index = "all", as_df: bool = False
     ):
@@ -1025,7 +957,7 @@ class MuVI(PyroModule):
             as_df=as_df,
         )
 
-    def _setup_model_guide(self, batch_size: int):
+    def _setup_model_guide(self, batch_size: int, scale_elbo: bool):
         """Setup model and guide.
 
         Parameters
@@ -1053,7 +985,7 @@ class MuVI(PyroModule):
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
                 nmf=[self.nmf[vn] for vn in self.view_names],
-                n_latent_clusters=self.n_latent_clusters,
+                scale_elbo=scale_elbo,
                 device=self.device,
             )
             self._guide = MuVIGuide(self._model)
@@ -1125,19 +1057,6 @@ class MuVI(PyroModule):
             vectorize_particles=True,
         )
 
-        if self.n_latent_clusters > 1:
-            if n_particles > 1:
-                logger.warning(
-                    "Cannot use multiple particles "
-                    "with multiple latent clusters, using a single particle."
-                )
-            loss = pyro.infer.TraceEnum_ELBO(
-                retain_graph=True,
-                num_particles=1,
-                vectorize_particles=True,
-                max_plate_nesting=2,
-            )
-
         svi = pyro.infer.SVI(
             model=pyro.poutine.scale(self._model, scale=scaler),
             guide=pyro.poutine.scale(self._guide, scale=scaler),
@@ -1193,6 +1112,7 @@ class MuVI(PyroModule):
         n_particles: int = 0,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
+        scale_elbo: bool = True,
         callbacks: Optional[List[Callable]] = None,
         verbose: bool = True,
         seed: Optional[int] = None,
@@ -1211,12 +1131,14 @@ class MuVI(PyroModule):
             by default 0 (1000 // batch_size)
         learning_rate : float, optional
             Learning rate, by default 0.005
+        scale_elbo : bool
+            Whether to scale the ELBO across views, by default True
         optimizer : str, optional
             Optimizer as string, 'adam' or 'clipped', by default "clipped"
         callbacks : List[Callable], optional
             List of callbacks during training, by default None
-        verbose : bool, optional
-            Whether to log progress, by default 1
+        verbose : bool
+            Whether to log progress, by default True
         seed : int, optional
             Training seed, by default None
         """
@@ -1230,7 +1152,7 @@ class MuVI(PyroModule):
         if n_particles > 1:
             logger.info(f"Using {n_particles} particles in parallel.")
         logger.info("Preparing model and guide...")
-        self._setup_model_guide(batch_size)
+        self._setup_model_guide(batch_size, scale_elbo)
         logger.info("Preparing optimizer...")
         opt = self._setup_optimizer(batch_size, n_epochs, learning_rate, optimizer)
         logger.info("Preparing SVI...")
@@ -1296,7 +1218,7 @@ class MuVI(PyroModule):
         stop_early = False
         history = []
         pbar = range(n_epochs)
-        if verbose > 0:
+        if verbose:
             pbar = tqdm(pbar)
             window_size = 5
 
@@ -1304,12 +1226,13 @@ class MuVI(PyroModule):
             for epoch_idx in pbar:
                 epoch_loss = _step()
                 history.append(epoch_loss)
-                if verbose > 0:
-                    if epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1:
-                        pbar.set_postfix({"ELBO": epoch_loss})
+                if verbose and (
+                    epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1
+                ):
+                    pbar.set_postfix({"ELBO": epoch_loss})
                 if callbacks is not None:
                     # TODO: dont really like this, a bit sloppy
-                    stop_early = any([callback(history) for callback in callbacks])
+                    stop_early = any(callback(history) for callback in callbacks)
                     if stop_early:
                         break
         except KeyboardInterrupt:
@@ -1343,8 +1266,8 @@ class MuVIModel(PyroModule):
         likelihoods: List[str],
         global_prior_scale: float = 1.0,
         reg_hs: bool = True,
-        nmf: List[bool] = None,
-        n_latent_clusters: int = 1,
+        nmf: Optional[List[bool]] = None,
+        scale_elbo: bool = True,
         device=None,
     ):
         """MuVI generative model.
@@ -1372,9 +1295,8 @@ class MuVIModel(PyroModule):
         nmf : List[bool], optional
             Whether to use non-negative matrix factorization,
             by default empty (False for all views)
-        n_latent_clusters : int, optional
-            Number of latent clusters to be inferred by a GMM prior,
-            by default 1 (standard normal prior)
+        scale_elbo : bool
+            Whether to scale the ELBO across views, by default True
         device : str, optional
             Device to run computations on, by default "cuda" (GPU)
         """
@@ -1382,7 +1304,7 @@ class MuVIModel(PyroModule):
         self.n_samples = n_samples
         self.n_subsamples = n_subsamples
         self.n_features = n_features
-        self.feature_offsets = [0] + np.cumsum(self.n_features).tolist()
+        self.feature_offsets = [0, *np.cumsum(self.n_features).tolist()]
         self.n_views = len(self.n_features)
         self.n_factors = n_factors
         self.n_covariates = n_covariates
@@ -1395,12 +1317,15 @@ class MuVIModel(PyroModule):
         if nmf is None:
             nmf = [False for _ in range(self.n_views)]
         self.nmf = nmf
-        self.n_latent_clusters = n_latent_clusters
-        self.latent_gmm = self.n_latent_clusters > 1
         # only needed if nmf is True
-        # self.pos_transform = torch.nn.Softplus(20)
         self.pos_transform = torch.nn.ReLU()
 
+        self.scale_elbo = scale_elbo
+        self.view_scales = np.ones(self.n_views)
+        if self.scale_elbo and self.n_views > 1:
+            self.view_scales = (self.n_views / (self.n_views - 1)) * (
+                1.0 - np.array([nf / sum(n_features) for nf in n_features])
+            )
         self.device = device
 
     def get_plate(self, name: str, **kwargs):
@@ -1419,8 +1344,6 @@ class MuVIModel(PyroModule):
         plate_kwargs = {
             "view": {"name": "view", "size": self.n_views, "dim": -1},
             "factor_left": {"name": "factor_left", "size": self.n_factors, "dim": -2},
-            "factor_right": {"name": "factor_right", "size": self.n_factors, "dim": -1},
-            "cluster": {"name": "cluster", "size": self.n_latent_clusters, "dim": -2},
             "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
@@ -1443,8 +1366,8 @@ class MuVIModel(PyroModule):
         sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
-        covs: torch.Tensor = None,
-        prior_scales: torch.Tensor = None,
+        covs: Optional[torch.Tensor] = None,
+        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Generate samples.
 
@@ -1470,37 +1393,20 @@ class MuVIModel(PyroModule):
 
         view_plate = self.get_plate("view")
         factor_l_plate = self.get_plate("factor_left")
-        factor_r_plate = self.get_plate("factor_right")
-        cluster_plate = self.get_plate("cluster")
         feature_plates = [self.get_plate(f"feature_{m}") for m in range(self.n_views)]
         sample_plate = self.get_plate("sample", subsample=sample_idx)
 
         if self.n_covariates > 0:
             covariate_plate = self.get_plate("covariate")
 
-        if self.latent_gmm:
-            output_dict["mixture_weights"] = pyro.sample(
-                "mixture_weights",
-                dist.Dirichlet(
-                    self._ones(self.n_latent_clusters) / self.n_latent_clusters
-                ),
-            )
-
-            with cluster_plate, factor_r_plate:
-                output_dict["wmm"] = pyro.sample(
-                    "wmm", dist.Normal(self._zeros(1), 5.0 * self._ones(1))
-                )
-                if any(self.nmf):
-                    output_dict["wmm"] = self.pos_transform(output_dict["wmm"])
-
         with view_plate:
             output_dict["view_scale"] = pyro.sample(
-                "view_scale", dist.HalfCauchy(self._ones(1))
+                "view_scale", dist.HalfCauchy(self._ones((1,)))
             )
             with factor_l_plate:
                 output_dict["factor_scale"] = pyro.sample(
                     "factor_scale",
-                    dist.HalfCauchy(self._ones(1)),
+                    dist.HalfCauchy(self._ones((1,))),
                 )
 
         for m in range(self.n_views):
@@ -1508,7 +1414,7 @@ class MuVIModel(PyroModule):
                 with factor_l_plate:
                     output_dict[f"local_scale_{m}"] = pyro.sample(
                         f"local_scale_{m}",
-                        dist.HalfCauchy(self._ones(1)),
+                        dist.HalfCauchy(self._ones((1,))),
                     )
 
                     w_scale = (
@@ -1520,7 +1426,9 @@ class MuVIModel(PyroModule):
                     if self.reg_hs:
                         output_dict[f"caux_{m}"] = pyro.sample(
                             f"caux_{m}",
-                            dist.InverseGamma(0.5 * self._ones(1), 0.5 * self._ones(1)),
+                            dist.InverseGamma(
+                                0.5 * self._ones((1,)), 0.5 * self._ones((1,))
+                            ),
                         )
                         c = torch.sqrt(output_dict[f"caux_{m}"])
                         if prior_scales is not None:
@@ -1540,7 +1448,7 @@ class MuVIModel(PyroModule):
                     output_dict[f"w_{m}"] = pyro.sample(
                         f"w_{m}",
                         dist.Normal(
-                            self._zeros(1),
+                            self._zeros((1,)),
                             w_scale,
                         ),
                     )
@@ -1554,30 +1462,24 @@ class MuVIModel(PyroModule):
                     with covariate_plate:
                         output_dict[f"beta_{m}"] = pyro.sample(
                             f"beta_{m}",
-                            dist.Normal(self._zeros(1), self._ones(1)),
+                            dist.Normal(self._zeros((1,)), self._ones((1,))),
                         )
 
                 output_dict[f"sigma_{m}"] = pyro.sample(
                     f"sigma_{m}",
-                    dist.InverseGamma(self._ones(1), self._ones(1)),
+                    dist.InverseGamma(self._ones((1,)), self._ones((1,))),
                 )
 
         with sample_plate:
-            if self.latent_gmm:
-                output_dict["assignment"] = pyro.sample(
-                    "assignment",
-                    dist.Categorical(output_dict["mixture_weights"]),
-                    infer={"enumerate": "parallel"},
-                )
-
-            with factor_r_plate:
-                z_loc = self._zeros(1)
-                if self.latent_gmm:
-                    z_loc = output_dict["wmm"][output_dict["assignment"][:, 0]]
-                output_dict["z"] = pyro.sample("z", dist.Normal(z_loc, self._ones(1)))
-                if any(self.nmf):
-                    output_dict["z"] = self.pos_transform(output_dict["z"])
-
+            output_dict["z"] = pyro.sample(
+                "z",
+                dist.Normal(
+                    self._zeros((self.n_factors,)),
+                    self._ones((self.n_factors,)),
+                ),
+            )
+            if any(self.nmf):
+                output_dict["z"] = self.pos_transform(output_dict["z"])
             for m in range(self.n_views):
                 with feature_plates[m]:
                     y_loc = torch.matmul(output_dict["z"], output_dict[f"w_{m}"])
@@ -1597,7 +1499,9 @@ class MuVIModel(PyroModule):
                         self.feature_offsets[m + 1],
                     )
 
-                    with pyro.poutine.mask(mask=mask[..., feature_idx]):
+                    with pyro.poutine.mask(
+                        mask=mask[..., feature_idx]
+                    ), pyro.poutine.scale(scale=self.view_scales[m]):
                         output_dict[f"y_{m}"] = pyro.sample(
                             f"y_{m}",
                             y_dist,
@@ -1633,8 +1537,6 @@ class MuVIGuide(PyroModule):
 
         self.init_loc = init_loc
         self.init_scale = init_scale
-        self.stick_breaking_transform = dist.transforms.StickBreakingTransform()
-        self.use_stick_breaking = True
 
         self.site_to_dist = self.setup()
 
@@ -1659,20 +1561,17 @@ class MuVIGuide(PyroModule):
         """Setup parameters and sampling sites."""
         n_views = self.model.n_views
         n_samples = self.model.n_samples
-        n_latent_clusters = self.model.n_latent_clusters
         n_factors = self.model.n_factors
         n_features = self.model.n_features
         n_covariates = self.model.n_covariates
 
         site_to_shape = {
-            "mixture_weights": (n_latent_clusters - int(self.use_stick_breaking),),
-            "wmm": (n_latent_clusters, n_factors),
             "z": (n_samples, n_factors),
             "view_scale": (n_views,),
             "factor_scale": (n_factors, n_views),
         }
 
-        normal_sites = ["wmm", "z"]
+        normal_sites = ["z"]
         for m in range(n_views):
             site_to_shape[f"local_scale_{m}"] = (n_factors, n_features[m])
             site_to_shape[f"caux_{m}"] = (n_factors, n_features[m])
@@ -1684,34 +1583,24 @@ class MuVIGuide(PyroModule):
             normal_sites.append(f"beta_{m}")
 
         site_to_dist = {
-            k: ("Normal" if k in normal_sites else "LogNormal")
-            for k in site_to_shape.keys()
+            k: "Normal" if k in normal_sites else "LogNormal" for k in site_to_shape
         }
-        site_to_dist["mixture_weights"] = "Dirichlet"
 
         for name, shape in site_to_shape.items():
-            init_loc = self.init_loc
-            init_scale = self.init_scale
-            if name == "wmm":
-                init_loc = torch.normal(
-                    mean=self.model._zeros(shape),
-                    std=self.model._ones(shape),
-                )
             deep_setattr(
                 self.locs,
                 name,
                 PyroParam(
-                    init_loc * self.model._ones(shape),
+                    self.init_loc * self.model._ones(shape),
                     constraints.real,
                 ),
             )
-            if name == "mixture_weights" and not self.use_stick_breaking:
-                init_scale = 1 / shape[0]
+
             deep_setattr(
                 self.scales,
                 name,
                 PyroParam(
-                    init_scale * self.model._ones(shape),
+                    self.init_scale * self.model._ones(shape),
                     constraints.softplus_positive,
                 ),
             )
@@ -1736,12 +1625,7 @@ class MuVIGuide(PyroModule):
         mode = loc
         if self.site_to_dist[name] == "LogNormal":
             mode = (loc - scale.square()).exp()
-        if self.site_to_dist[name] == "Dirichlet":
-            if self.use_stick_breaking:
-                mode = self.stick_breaking_transform(mode)
-            else:
-                mode = dist.Dirichlet(scale).mode
-        if (name == "z" or name == "wnn") and any(self.model.nmf):
+        if (name == "z") and any(self.model.nmf):
             mode = self.model.pos_transform(mode)
         for m in range(self.model.n_views):
             if name == f"w_{m}" and self.model.nmf[m]:
@@ -1756,7 +1640,7 @@ class MuVIGuide(PyroModule):
         else:
             params = [self.mode(param_name)]
 
-        vector_params = ["view_scale", "mixture_weights", "sigma"]
+        vector_params = ["view_scale", "sigma"]
 
         if param_name in vector_params:
             params = [param[None, :] for param in params]
@@ -1765,14 +1649,6 @@ class MuVIGuide(PyroModule):
         if as_list:
             return params
         return np.concatenate(params, axis=1)
-
-    def get_mixture_weights(self):
-        """Get the mixture weights."""
-        return self._get_map_estimate("mixture_weights", False, False)
-
-    def get_mixture_centers(self):
-        """Get the mixture centers."""
-        return self._get_map_estimate("wmm", False, False)
 
     def get_sigma(self, as_list: bool = False):
         """Get the marginal feature scales."""
@@ -1806,29 +1682,6 @@ class MuVIGuide(PyroModule):
         """Get the beta coefficients."""
         return self._get_map_estimate("beta", True, as_list=as_list)
 
-    def _sample_transformed_dirichlet(self, name, loc, scale):
-        unconstrained_latent = pyro.sample(
-            name + "_unconstrained",
-            dist.Normal(
-                loc,
-                scale,
-            ).to_event(1),
-            infer={"is_auxiliary": True},
-        )
-
-        value = self.stick_breaking_transform(unconstrained_latent)
-        log_density = self.stick_breaking_transform.inv.log_abs_det_jacobian(
-            value,
-            unconstrained_latent,
-        )
-        delta_dist = dist.Delta(
-            value,
-            log_density=log_density,
-            event_dim=1,
-        )
-
-        return pyro.sample(name, delta_dist)
-
     def _sample(self, name, index=None):
         loc, scale = self._get_loc_and_scale(name)
         if index is not None:
@@ -1837,8 +1690,6 @@ class MuVIGuide(PyroModule):
         if self.site_to_dist[name] == "LogNormal":
             return pyro.sample(name, dist.LogNormal(loc, scale))
         if self.site_to_dist[name] == "Dirichlet":
-            if self.use_stick_breaking:
-                return self._sample_transformed_dirichlet(name, loc, scale)
             return pyro.sample(name, dist.Dirichlet(scale))
         return pyro.sample(name, dist.Normal(loc, scale))
 
@@ -1847,16 +1698,14 @@ class MuVIGuide(PyroModule):
         sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
-        covs: torch.Tensor = None,
-        prior_scales: torch.Tensor = None,
+        covs: Optional[torch.Tensor] = None,
+        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Approximate posterior."""
         output_dict = {}
 
         view_plate = self.model.get_plate("view")
         factor_l_plate = self.model.get_plate("factor_left")
-        factor_r_plate = self.model.get_plate("factor_right")
-        cluster_plate = self.model.get_plate("cluster")
         feature_plates = [
             self.model.get_plate(f"feature_{m}") for m in range(self.model.n_views)
         ]
@@ -1864,11 +1713,6 @@ class MuVIGuide(PyroModule):
 
         if self.model.n_covariates > 0:
             covariate_plate = self.model.get_plate("covariate")
-
-        if self.model.latent_gmm:
-            output_dict["mixture_weights"] = self._sample("mixture_weights")
-            with cluster_plate, factor_r_plate:
-                output_dict["wmm"] = self._sample("wmm")
 
         with view_plate:
             output_dict["view_scale"] = self._sample("view_scale")
@@ -1890,6 +1734,5 @@ class MuVIGuide(PyroModule):
                 output_dict[f"sigma_{m}"] = self._sample(f"sigma_{m}")
 
         with sample_plate as indices:
-            with factor_r_plate:
-                output_dict["z"] = self._sample("z", indices)
+            output_dict["z"] = self._sample("z", indices)
         return output_dict

@@ -1,11 +1,15 @@
 """Collection of MuVI callbacks."""
 from collections import defaultdict
-from typing import Callable, List
+from typing import Callable
+from typing import List
+from typing import Optional
 
 import numpy as np
+
 from sklearn.metrics import precision_recall_fscore_support
 
-from muvi.tools.utils import rmse, variance_explained
+from muvi.tools.utils import rmse
+from muvi.tools.utils import variance_explained
 
 
 class EarlyStoppingCallback:
@@ -63,7 +67,7 @@ class EarlyStoppingCallback:
 
         if stop_early:
             print(
-                f"Relative improvement of "
+                "Relative improvement of "
                 f"{relative_improvement:0.4g} < {self.tolerance:0.4g} "
                 f"for {self.patience} step(s) in a row, stopping early."
             )
@@ -77,7 +81,7 @@ class CheckpointCallback:
         model,
         n_epochs: int,
         n_checkpoints: int = 10,
-        callback: Callable = None,
+        callback: Optional[Callable] = None,
     ):
         """Checkpoint callback.
 
@@ -97,7 +101,7 @@ class CheckpointCallback:
         self.model = model
         self.n_epochs = n_epochs
         self.n_checkpoints = n_checkpoints
-        self.window_size = int(n_epochs / n_checkpoints)
+        self.window_size = n_epochs // n_checkpoints
         self.callback = callback
 
     def __call__(self, loss_history):
@@ -110,7 +114,9 @@ class CheckpointCallback:
 
 
 class LogCallback:
-    _CALLBACK_KEYS = [
+    from typing import ClassVar
+
+    _CALLBACK_KEYS: ClassVar[list] = [
         "sparsity",
         "binary_scores",
         "rmse",
@@ -123,7 +129,7 @@ class LogCallback:
         model,
         n_epochs: int,
         n_checkpoints: int = 10,
-        active_callbacks: List[str] = None,
+        active_callbacks: Optional[List[str]] = None,
         view_wise: bool = True,
         **kwargs,
     ) -> None:
@@ -156,7 +162,10 @@ class LogCallback:
         self.callback_config = {k: self._default_config[k] for k in active_callbacks}
         self.callback_dict = {
             k: CheckpointCallback(
-                self.model, self.n_epochs, v["n_checkpoints"], v["callback"]
+                self.model,
+                self.n_epochs,
+                n_checkpoints=v["n_checkpoints"],
+                callback=v["callback"],
             )
             for k, v in self.callback_config.items()
         }
@@ -184,7 +193,7 @@ class LogCallback:
                 "callback": self._variance_explained,
             },
             "log": {
-                "n_checkpoints": self.kwargs.get("log_frequency", 100),
+                "n_checkpoints": self.n_checkpoints,
                 "callback": self.log,
             },
         }
@@ -287,7 +296,7 @@ class LogCallback:
             self.zs.append(self.factor_scores)
 
     def __call__(self, loss_history):
-        for key, cb in self.callback_dict.items():
+        for _key, cb in self.callback_dict.items():
             cb(loss_history)
 
         return False
@@ -297,7 +306,7 @@ def compute_binary_scores_at(
     true_mask: np.ndarray,
     learned_w: np.ndarray,
     threshold: float = 0.05,
-    at: int = None,
+    at: Optional[int] = None,
 ):
     """Compute binary scores (precision, recall, F1).
 

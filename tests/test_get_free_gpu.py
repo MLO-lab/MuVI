@@ -8,5 +8,5 @@ def test_early_stopping_callback():
         gpu_idx = get_free_gpu_idx()
         assert gpu_idx >= 0
     else:
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError):
             get_free_gpu_idx()

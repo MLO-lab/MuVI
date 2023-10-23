@@ -1,12 +1,11 @@
 [tool.poetry]
 name = "muvi"
-version = "0.1.0"
+version = "0.1.1"
 description = "MuVI: A multi-view latent variable model with domain-informed structured sparsity for integrating noisy feature sets."
 readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
 homepage = "https://github.com/MLO-lab/MuVI"
 repository = "https://github.com/MLO-lab/MuVI"
-# TODO: documentation = ""
 keywords = ["multi-view", "multi-omics", "feature sets", "latent variable model", "structured sparsity", "variational inference", "single-cell"]
 
 

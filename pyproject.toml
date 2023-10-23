@@ -107,7 +107,6 @@ exclude = [
     "tests",
 ]
 
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -115,4 +114,7 @@ testpaths = ["tests"]
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover"
+]
+omit = [
+    "**/tests/*"
 ]

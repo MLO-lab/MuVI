@@ -1,6 +1,10 @@
 name: test
 
-on: pull_request
+on:
+  push:
+      branches: [main]
+  pull_request:
+      branches: [main]
 
 jobs:
   test:
@@ -55,4 +59,7 @@ jobs:
       - name: Run tests
         run: |
           source $VENV
-          pytest tests/
+          pytest -v --cov-report xml:coverage.xml --cov=muvi --color=yes
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3

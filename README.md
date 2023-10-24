@@ -5,7 +5,7 @@ A multi-view latent variable model with domain-informed structured sparsity, tha
 [Examples](examples/1_basic_tutorial.ipynb) | [Paper](https://proceedings.mlr.press/v206/qoku23a/qoku23a.pdf) | [BibTeX](citation.bib)
 
 [![Build](https://github.com/mlo-lab/muvi/actions/workflows/build.yml/badge.svg)](https://github.com/mlo-lab/muvi/actions/workflows/build.yml/)
-[![Coverage](https://codecov.io/gh/mlo-lab/muvi/branch/release/graph/badge.svg)](https://codecov.io/gh/mlo-lab/muvi)
+[![Coverage](https://codecov.io/gh/mlo-lab/muvi/branch/master/graph/badge.svg)](https://codecov.io/gh/mlo-lab/muvi)
 
 ## Basic usage
 

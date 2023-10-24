@@ -87,7 +87,7 @@ Check out our [basic tutorial](examples/1_basic_tutorial.ipynb) to get familiar 
 muvi.ext.save_as_hdf5(model, "muvi.hdf5", save_metadata=True)
 ```
 
-See [this vignette]([examples/4_single-cell_multi-omics_integration_R.html](https://raw.githack.com/MLO-lab/MuVI/master/examples/4_single-cell_multi-omics_integration_R.html)) for more details!
+See [this vignette](https://raw.githack.com/MLO-lab/MuVI/master/examples/4_single-cell_multi-omics_integration_R.html) for more details!
 
 ## Installation
 

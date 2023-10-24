@@ -1,3 +1,6 @@
+[![Build](https://github.com/mlo-lab/muvi/actions/workflows/build.yml/badge.svg)](https://github.com/mlo-lab/muvi/actions/workflows/build.yml/)
+[![Coverage](https://codecov.io/gh/mlo-lab/muvi/branch/release/graph/badge.svg)](https://codecov.io/gh/mlo-lab/muvi)
+
 # MuVI
 
 A multi-view latent variable model with domain-informed structured sparsity, that integrates noisy domain expertise in terms of feature sets.

@@ -1131,13 +1131,13 @@ class MuVI(PyroModule):
             by default 0 (1000 // batch_size)
         learning_rate : float, optional
             Learning rate, by default 0.005
-        scale_elbo : bool
+        scale_elbo : bool, optional
             Whether to scale the ELBO across views, by default True
         optimizer : str, optional
             Optimizer as string, 'adam' or 'clipped', by default "clipped"
         callbacks : List[Callable], optional
             List of callbacks during training, by default None
-        verbose : bool
+        verbose : bool, optional
             Whether to log progress, by default True
         seed : int, optional
             Training seed, by default None

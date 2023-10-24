@@ -115,5 +115,6 @@ exclude_lines = [
     "pragma: no cover"
 ]
 omit = [
-    "**/tests/*"
+    "**/tests/*",
+    "**/muvi/tools/plotting.py"
 ]

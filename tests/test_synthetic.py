@@ -33,6 +33,35 @@ def test_shapes(data_gen):
         )
 
 
+def test_generate_all_combs(data_gen):
+    data_gen.generate(all_combs=True)
+
+    four_variable_binary_table = np.array(
+        [
+            [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        ]
+    )
+
+    np.testing.assert_equal(data_gen.view_factor_mask, four_variable_binary_table)
+
+
+def test_normalise(data_gen):
+    data_gen.generate()
+    data_gen.normalise(with_std=True)
+    for m in range(data_gen.n_views):
+        if data_gen.likelihoods[m] == "normal":
+            y = np.array(data_gen.ys[m], dtype=np.float32, copy=True)
+            np.testing.assert_almost_equal(
+                np.zeros_like(y.mean(axis=0)), y.mean(axis=0), decimal=3
+            )
+            np.testing.assert_almost_equal(
+                np.ones_like(y.std(axis=0)), y.std(axis=0), decimal=3
+            )
+
+
 def test_w_mask(data_gen):
     data_gen.generate()
 

@@ -1,7 +1,6 @@
 import logging
 
 from pathlib import Path
-from typing import List
 from typing import Optional
 from typing import Union
 
@@ -26,7 +25,7 @@ from muvi.tools.cache import Cache
 
 logger = logging.getLogger(__name__)
 
-Index = Union[int, str, List[int], List[str], np.ndarray, pd.Index]
+Index = Union[int, str, list[int], list[str], np.ndarray, pd.Index]
 
 
 def setup_cache(model, overwrite: bool = False):

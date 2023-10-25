@@ -2,13 +2,10 @@
 import logging
 
 from collections import Counter
+from collections.abc import Collection
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Collection
-from typing import Dict
-from typing import Iterable
 from typing import Optional
-from typing import Set
-from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -440,7 +437,7 @@ class FeatureSets:
 
     def _find_similar_pairs(
         self, sim_matrix: pd.DataFrame, similarity_threshold: float
-    ) -> Set[Tuple[str, str]]:
+    ) -> set[tuple[str, str]]:
         """Find similar pairs of feature sets.
 
         Parameters
@@ -452,7 +449,7 @@ class FeatureSets:
 
         Returns
         -------
-        Set[Tuple[str, str]]
+        set[tuple[str, str]]
             Similar pairs of feature sets.
         """
 
@@ -480,7 +477,7 @@ class FeatureSets:
         observations: pd.DataFrame = None,
         metric: Optional[str] = None,
         similarity_threshold: float = 0.8,
-    ) -> Set[Tuple[str, str]]:
+    ) -> set[tuple[str, str]]:
         """Find similar pairs of feature sets.
 
         Parameters
@@ -497,7 +494,7 @@ class FeatureSets:
 
         Returns
         -------
-        Set[Tuple[str, str]]
+        set[tuple[str, str]]
             Similar pairs of feature sets.
         """
         if observations is None and metric is None:
@@ -523,12 +520,12 @@ class FeatureSets:
             sim_matrix = sim_matrix[0]
         return self._find_similar_pairs(sim_matrix.fillna(0.0), similarity_threshold)
 
-    def merge_pairs(self, pairs: Iterable[Tuple[str, str]]):
+    def merge_pairs(self, pairs: Iterable[tuple[str, str]]):
         """Merge pairs of feature sets.
 
         Parameters
         ----------
-        pairs : Iterable[Tuple[str, str]]
+        pairs : Iterable[tuple[str, str]]
             Pairs of feature sets.
 
         Returns
@@ -617,12 +614,12 @@ class FeatureSets:
                     + "\n"
                 )
 
-    def to_dict(self) -> Dict[str, Iterable[str]]:
+    def to_dict(self) -> dict[str, Iterable[str]]:
         """Convert this feature set collection to a dictionary.
 
         Returns
         -------
-        Dict[str, Iterable[str]]
+        dict[str, Iterable[str]]
             Dictionary of feature sets.
         """
         return {fs.name: fs.features for fs in self.feature_sets}
@@ -657,7 +654,7 @@ def from_gmt(path: Path, name: Optional[str] = None, **kwargs) -> FeatureSets:
 
 
 def from_dict(
-    d: Dict[str, Iterable[str]],
+    d: dict[str, Iterable[str]],
     name: Optional[str] = None,
     **kwargs,
 ) -> FeatureSets:
@@ -665,7 +662,7 @@ def from_dict(
 
     Parameters
     ----------
-    d : Dict[str, Iterable[str]]
+    d : dict[str, Iterable[str]]
         Dictionary of feature sets.
     name : str, optional
         Name of the collection, by default None.

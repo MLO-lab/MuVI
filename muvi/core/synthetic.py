@@ -3,9 +3,7 @@ import itertools
 import logging
 import math
 
-from typing import List
 from typing import Optional
-from typing import Tuple
 
 import anndata as ad
 import mudata as mu
@@ -19,17 +17,17 @@ class DataGenerator:
     def __init__(
         self,
         n_samples: int = 1000,
-        n_features: Optional[List[int]] = None,
-        likelihoods: Optional[List[str]] = None,
+        n_features: Optional[list[int]] = None,
+        likelihoods: Optional[list[str]] = None,
         n_fully_shared_factors: int = 2,
         n_partially_shared_factors: int = 15,
         n_private_factors: int = 3,
-        factor_size_params: Optional[Tuple[float]] = None,
+        factor_size_params: Optional[tuple[float]] = None,
         factor_size_dist: str = "uniform",
         n_active_factors: float = 1.0,
         n_covariates: int = 0,
         n_response: int = 0,
-        nmf: Optional[List[bool]] = None,
+        nmf: Optional[list[bool]] = None,
         **kwargs,
     ) -> None:
         """Generate synthetic data
@@ -38,9 +36,9 @@ class DataGenerator:
         ----------
         n_samples : int, optional
             Number of samples, by default 1000
-        n_features : List[int], optional
+        n_features : list[int], optional
             Number of features for each view, by default None
-        likelihoods : List[str], optional
+        likelihoods : list[str], optional
             Likelihoods for each view, 'normal' or 'bernoulli', by default None
         n_fully_shared_factors : int, optional
             Number of fully shared latent factors, by default 2
@@ -48,7 +46,7 @@ class DataGenerator:
             Number of partially shared latent factors, by default 15
         n_private_factors : int, optional
             Number of private latent factors, by default 3
-        factor_size_params : Tuple[float], optional
+        factor_size_params : tuple[float], optional
             Parameters for the distribution of the number
             of active factor loadings for the latent factors,
             by default None
@@ -62,7 +60,7 @@ class DataGenerator:
             Number of observed covariates, by default 0
         n_response : int, optional
             Number of response variables from the latent factors, by default 0
-        nmf : List[bool], optional
+        nmf : list[bool], optional
             Whether to generate data from a non-negative matrix factorization,
             by default False
         """

@@ -3,8 +3,6 @@ import time
 
 from typing import Any
 from typing import Callable
-from typing import Dict
-from typing import List
 from typing import Optional
 from typing import Union
 
@@ -31,9 +29,9 @@ from muvi.core.index import _normalize_index
 
 logger = logging.getLogger(__name__)
 
-Index = Union[int, str, List[int], List[str], np.ndarray, pd.Index]
+Index = Union[int, str, list[int], list[str], np.ndarray, pd.Index]
 SingleView = Union[np.ndarray, pd.DataFrame]
-MultiView = Union[Dict[str, SingleView], List[SingleView]]
+MultiView = Union[dict[str, SingleView], list[SingleView]]
 
 
 class DictDataset(Dataset):
@@ -64,10 +62,10 @@ class MuVI(PyroModule):
         covariates: Optional[SingleView] = None,
         prior_confidence: Union[float, str] = 0.99,
         n_factors: Optional[int] = None,
-        view_names: Optional[List[str]] = None,
-        likelihoods: Optional[Union[Dict[str, str], List[str]]] = None,
+        view_names: Optional[list[str]] = None,
+        likelihoods: Optional[Union[dict[str, str], list[str]]] = None,
         reg_hs: bool = True,
-        nmf: Optional[Union[Dict[str, bool], List[bool]]] = None,
+        nmf: Optional[Union[dict[str, bool], list[bool]]] = None,
         device: str = "cuda",
     ):
         """MuVI module.
@@ -89,11 +87,11 @@ class MuVI(PyroModule):
             Number of latent factors,
             can be omitted when providing prior masks,
             by default None
-        view_names : List[str], optional
+        view_names : list[str], optional
             List of names for each view,
             determines view order as well,
             by default None
-        likelihoods : Union[Dict[str, str], List[str]], optional
+        likelihoods : Union[dict[str, str], list[str]], optional
             Likelihoods for each view,
             either "normal" or "bernoulli",
             by default None (all "normal")
@@ -101,7 +99,7 @@ class MuVI(PyroModule):
             Whether to use the regularized version of HS,
             by default True,
             only relevant when NOT using informative priors
-        nmf : Union[Dict[str, bool], List[bool]], optional
+        nmf : Union[dict[str, bool], list[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
         device : str, optional
@@ -132,7 +130,7 @@ class MuVI(PyroModule):
         self._guide = None
         self._built = False
         self._trained = False
-        self._training_log: Dict[str, Any] = {}
+        self._training_log: dict[str, Any] = {}
         self._cache = None
 
     @property
@@ -637,7 +635,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         sample_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         as_df: bool = False,
     ):
         """Get observations.
@@ -648,7 +646,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         sample_idx : Index, optional
             Sample index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         as_df : bool, optional
             Whether to return a pandas dataframe,
@@ -678,7 +676,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         sample_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         factor_idx: Index = "all",
         cov_idx: Index = "all",
         as_df: bool = False,
@@ -691,7 +689,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         sample_idx : Index, optional
             Sample index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         factor_idx : Index, optional
             Factor index, by default "all"
@@ -749,7 +747,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         sample_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         as_df: bool = False,
     ):
         """Get imputed observations.
@@ -760,7 +758,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         sample_idx : Index, optional
             Sample index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         as_df : bool, optional
             Whether to return a pandas dataframe,
@@ -787,7 +785,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         factor_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         as_df: bool = False,
     ):
         """Get prior masks.
@@ -798,7 +796,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         factor_idx : Index, optional
             Factor index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         as_df : bool, optional
             Whether to return a pandas dataframe,
@@ -824,7 +822,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         factor_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         as_df: bool = False,
     ):
         """Get factor loadings.
@@ -835,7 +833,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         factor_idx : Index, optional
             Factor index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         as_df : bool, optional
             Whether to return a pandas dataframe,
@@ -864,7 +862,7 @@ class MuVI(PyroModule):
         self,
         view_idx: Index = "all",
         cov_idx: Index = "all",
-        feature_idx: Union[Index, List[Index], Dict[str, Index]] = "all",
+        feature_idx: Union[Index, list[Index], dict[str, Index]] = "all",
         as_df: bool = False,
     ):
         """Get factor loadings.
@@ -875,7 +873,7 @@ class MuVI(PyroModule):
             View index, by default "all"
         cov_idx : Index, optional
             Covariate index, by default "all"
-        feature_idx : Union[Index, List[Index], Dict[str, Index]], optional
+        feature_idx : Union[Index, list[Index], dict[str, Index]], optional
             Feature index, by default "all"
         as_df : bool, optional
             Whether to return a pandas dataframe,
@@ -1113,7 +1111,7 @@ class MuVI(PyroModule):
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
         scale_elbo: bool = True,
-        callbacks: Optional[List[Callable]] = None,
+        callbacks: Optional[list[Callable]] = None,
         verbose: bool = True,
         seed: Optional[int] = None,
     ):
@@ -1135,7 +1133,7 @@ class MuVI(PyroModule):
             Whether to scale the ELBO across views, by default True
         optimizer : str, optional
             Optimizer as string, 'adam' or 'clipped', by default "clipped"
-        callbacks : List[Callable], optional
+        callbacks : list[Callable], optional
             List of callbacks during training, by default None
         verbose : bool, optional
             Whether to log progress, by default True
@@ -1260,13 +1258,13 @@ class MuVIModel(PyroModule):
         self,
         n_samples: int,
         n_subsamples: int,
-        n_features: List[int],
+        n_features: list[int],
         n_factors: int,
         n_covariates: int,
-        likelihoods: List[str],
+        likelihoods: list[str],
         global_prior_scale: float = 1.0,
         reg_hs: bool = True,
-        nmf: Optional[List[bool]] = None,
+        nmf: Optional[list[bool]] = None,
         scale_elbo: bool = True,
         device=None,
     ):
@@ -1278,13 +1276,13 @@ class MuVIModel(PyroModule):
             Number of samples
         n_subsamples : int
             Number of subsamples (batch size)
-        n_features : List[int]
+        n_features : list[int]
             Number of features as list for each view
         n_factors : int
             Number of latent factors
         n_covariates : int
             Number of covariates
-        likelihoods : List[str], optional
+        likelihoods : list[str], optional
             List of likelihoods for each view,
             either "normal" or "bernoulli", by default None
         global_prior_scale : float, optional
@@ -1292,7 +1290,7 @@ class MuVIModel(PyroModule):
         reg_hs : bool, optional
             Whether to use the regularized version of HS,
             by default True
-        nmf : List[bool], optional
+        nmf : list[bool], optional
             Whether to use non-negative matrix factorization,
             by default empty (False for all views)
         scale_elbo : bool
@@ -1499,9 +1497,10 @@ class MuVIModel(PyroModule):
                         self.feature_offsets[m + 1],
                     )
 
-                    with pyro.poutine.mask(
-                        mask=mask[..., feature_idx]
-                    ), pyro.poutine.scale(scale=self.view_scales[m]):
+                    with (
+                        pyro.poutine.mask(mask=mask[..., feature_idx]),
+                        pyro.poutine.scale(scale=self.view_scales[m]),
+                    ):
                         output_dict[f"y_{m}"] = pyro.sample(
                             f"y_{m}",
                             y_dist,

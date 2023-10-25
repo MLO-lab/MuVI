@@ -1,7 +1,6 @@
 """Collection of MuVI callbacks."""
 from collections import defaultdict
 from typing import Callable
-from typing import List
 from typing import Optional
 
 import numpy as np
@@ -129,7 +128,7 @@ class LogCallback:
         model,
         n_epochs: int,
         n_checkpoints: int = 10,
-        active_callbacks: Optional[List[str]] = None,
+        active_callbacks: Optional[list[str]] = None,
         view_wise: bool = True,
         **kwargs,
     ) -> None:
@@ -144,7 +143,7 @@ class LogCallback:
         n_checkpoints : int, optional
             Number of times to execute during training,
             by default 10
-        active_callbacks : List[str], optional
+        active_callbacks : list[str], optional
             List of callback names from LogCallback._CALLBACK_KEYS,
             by default None (all)
         view_wise : bool, optional

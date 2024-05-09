@@ -1,4 +1,5 @@
 """Collection of plotting functions."""
+
 import logging
 
 from typing import Optional
@@ -32,6 +33,13 @@ STACKED_VIOLIN = "stacked_violin"
 PL_TYPES = [HEATMAP, MATRIXPLOT, DOTPLOT, TRACKSPLOT, VIOLIN, STACKED_VIOLIN]
 
 
+STRIPPLOT = "stripplot"
+BOXPLOT = "boxplot"
+BOXENPLOT = "boxenplot"
+VIOLINPLOT = "violinplot"
+GROUP_PL_TYPES = [STRIPPLOT, BOXPLOT, BOXENPLOT, VIOLINPLOT]
+
+
 def savefig_or_show(
     writekey: str,
     show: Optional[bool] = None,
@@ -46,11 +54,13 @@ def _subset_df(data, groupby, groups, include_rest=True):
     if groups is None:
         return data
 
+    _groups = groups.copy()
+
     if include_rest:
         data[groupby] = data[groupby].cat.add_categories(include_rest)
-        data.loc[~data[groupby].isin(groups), groupby] = include_rest
-        groups.append(include_rest)
-    data = data.loc[data[groupby].isin(groups), :].copy()
+        data.loc[~data[groupby].isin(_groups), groupby] = include_rest
+        _groups.append(include_rest)
+    data = data.loc[data[groupby].isin(_groups), :].copy()
     data[groupby] = data[groupby].cat.remove_unused_categories()
 
     if data.empty:
@@ -60,7 +70,12 @@ def _subset_df(data, groupby, groups, include_rest=True):
 
 
 def _setup_legend(
-    g, bbox_to_anchor=(1, 0.5), loc="center left", frameon=False, remove_last=False
+    g,
+    bbox_to_anchor=(1, 0.5),
+    loc="center left",
+    frameon=False,
+    remove_last=False,
+    fontsize=None,
 ):
     kwargs = {"bbox_to_anchor": bbox_to_anchor, "loc": loc, "frameon": frameon}
 
@@ -68,6 +83,9 @@ def _setup_legend(
         handles, labels = g.get_legend_handles_labels()
         kwargs["handles"] = handles[:-1]
         kwargs["labels"] = labels[:-1]
+
+    if fontsize is not None:
+        kwargs["fontsize"] = fontsize
     g.legend(**kwargs)
 
     return g
@@ -222,6 +240,8 @@ def variance_explained_grouped(
     )
     data = data.loc[factor_idx]
 
+    legend_fontsize = kwargs.pop("legend_fontsize", None)
+
     g = data.plot(
         kind=kind,
         stacked=stacked,
@@ -230,7 +250,7 @@ def variance_explained_grouped(
     )
     g.set_ylabel(r"$R^2$")
 
-    g = _setup_legend(g)
+    g = _setup_legend(g, fontsize=legend_fontsize)
 
     g.set_title(f"Variance explained across {groupby} groups in {', '.join(view_idx)}")
     g.set(xlabel="Factor")
@@ -595,12 +615,31 @@ def factor_activity(
     noisy_mask,
     factor_idx=0,
     ylim=None,
+    top=None,
     **kwargs,
 ):
     true_w_col = true_w[factor_idx, :]
     w_col = approx_w[factor_idx, :]
     true_mask_col = true_mask[factor_idx, :]
     noisy_mask_col = noisy_mask[factor_idx, :]
+    if top is not None:
+        # descending order
+        argsort_indices = np.argsort(-np.abs(w_col))[:top]
+        w_col = w_col[argsort_indices]
+        # remove zeros
+        non_zero_indices = np.abs(w_col) > 0
+        if non_zero_indices.sum() < top:
+            logger.warning(
+                f"Found {sum(non_zero_indices)} (< {top}) non-zero weights found,"
+                " updating the `top` parameter."
+            )
+        top = min(top, sum(non_zero_indices))
+        # subset again
+        argsort_indices = argsort_indices[:top]
+        w_col = w_col[:top]
+        true_w_col = true_w_col[argsort_indices]
+        true_mask_col = true_mask_col[argsort_indices]
+        noisy_mask_col = noisy_mask_col[argsort_indices]
 
     activity_df = pd.DataFrame(
         {
@@ -608,10 +647,10 @@ def factor_activity(
             "weight": w_col,
             "true_mask": true_mask_col,
             "noisy_mask": noisy_mask_col,
-            "TP": true_mask_col * noisy_mask_col,
-            "FP": (1 - true_mask_col) * noisy_mask_col,
-            "TN": (1 - true_mask_col) * (1 - noisy_mask_col),
-            "FN": true_mask_col * (1 - noisy_mask_col),
+            "TP": true_mask_col & noisy_mask_col,
+            "FP": ~true_mask_col & noisy_mask_col,
+            "TN": ~true_mask_col & ~noisy_mask_col,
+            "FN": true_mask_col & ~noisy_mask_col,
         }
     )
     activity_df.sort_values(["true_weight"], inplace=True)
@@ -712,11 +751,14 @@ def group(
             f"`{pl_type}` is not valid. Select one of {','.join(PL_TYPES)}."
         ) from e
 
-    adata = _get_model_cache(model).factor_adata
+    factor_adata = _get_model_cache(model).factor_adata.copy()
 
     return pl_fn(
-        adata[
-            _subset_df(adata.obs.copy(), groupby, groups, include_rest=False).index, :
+        factor_adata[
+            _subset_df(
+                factor_adata.obs.copy(), groupby, groups, include_rest=False
+            ).index,
+            :,
         ],
         factor_idx,
         groupby,
@@ -837,10 +879,11 @@ def clustermap(model, factor_idx="all", **kwargs):
     )
 
 
-def stripplot(
+def _groupplot(
     model,
     factor_idx,
     groupby,
+    pl_type=STRIPPLOT,
     groups=None,
     include_rest=True,
     rot: int = 45,
@@ -868,7 +911,27 @@ def stripplot(
 
     data = _subset_df(data, groupby, groups, include_rest=include_rest)
 
-    g = sns.stripplot(
+    if pl_type is None:
+        pl_type = STRIPPLOT
+    pl_type = pl_type.lower().strip()
+
+    type_to_fn = {
+        STRIPPLOT: sns.stripplot,
+        BOXPLOT: sns.boxplot,
+        BOXENPLOT: sns.boxenplot,
+        VIOLINPLOT: sns.violinplot,
+    }
+
+    try:
+        pl_fn = type_to_fn[pl_type]
+    except KeyError as e:
+        raise ValueError(
+            f"`{pl_type}` is not valid. Select one of {', '.join(GROUP_PL_TYPES)}."
+        ) from e
+
+    legend_fontsize = kwargs.pop("legend_fontsize", None)
+
+    g = pl_fn(
         data=data,
         x="Factor",
         y="Score",
@@ -879,16 +942,117 @@ def stripplot(
                 model_cache.factor_adata, groupby, include_rest=include_rest
             ),
         ),
-        dodge=kwargs.pop("dodge", True),
         **kwargs,
     )
     if rot is not None:
         for label in g.get_xticklabels():
             label.set_rotation(rot)
-    g = _setup_legend(g, remove_last=groups is not None and include_rest)
-    savefig_or_show("stripplot", show=show, save=save)
+    g = _setup_legend(
+        g, remove_last=groups is not None and include_rest, fontsize=legend_fontsize
+    )
+    savefig_or_show(pl_type, show=show, save=save)
     if not show:
         return g
+
+
+def stripplot(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    include_rest=True,
+    rot: int = 45,
+    show: Optional[bool] = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    return _groupplot(
+        model,
+        factor_idx,
+        groupby,
+        pl_type=STRIPPLOT,
+        groups=groups,
+        include_rest=include_rest,
+        rot=rot,
+        show=show,
+        save=save,
+        **kwargs,
+    )
+
+
+def boxplot(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    include_rest=True,
+    rot: int = 45,
+    show: Optional[bool] = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    return _groupplot(
+        model,
+        factor_idx,
+        groupby,
+        pl_type=BOXPLOT,
+        groups=groups,
+        include_rest=include_rest,
+        rot=rot,
+        show=show,
+        save=save,
+        **kwargs,
+    )
+
+
+def boxenplot(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    include_rest=True,
+    rot: int = 45,
+    show: Optional[bool] = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    return _groupplot(
+        model,
+        factor_idx,
+        groupby,
+        pl_type=BOXENPLOT,
+        groups=groups,
+        include_rest=include_rest,
+        rot=rot,
+        show=show,
+        save=save,
+        **kwargs,
+    )
+
+
+def violinplot(
+    model,
+    factor_idx,
+    groupby,
+    groups=None,
+    include_rest=True,
+    rot: int = 45,
+    show: Optional[bool] = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    return _groupplot(
+        model,
+        factor_idx,
+        groupby,
+        pl_type=VIOLINPLOT,
+        groups=groups,
+        include_rest=include_rest,
+        rot=rot,
+        show=show,
+        save=save,
+        **kwargs,
+    )
 
 
 def scatter(
@@ -918,13 +1082,11 @@ def scatter(
     )
 
     if style is None:
-        adata = model_cache.factor_adata
-        if include_rest and groups is not None:
-            groups = groups[:-1]
-        else:
-            adata = adata[data.index, :]
+        factor_adata = model_cache.factor_adata.copy()
+        if not include_rest:
+            factor_adata = factor_adata[data.index, :]
         return sc.pl.scatter(
-            adata,
+            factor_adata,
             x,
             y,
             groups=groups,
@@ -940,6 +1102,7 @@ def scatter(
     size = kwargs.pop("size", None)
     show = kwargs.pop("show", None)
     save = kwargs.pop("save", None)
+    legend_fontsize = kwargs.pop("legend_fontsize", None)
 
     kwargs = {}
 
@@ -960,7 +1123,9 @@ def scatter(
     )
 
     # getting as close as possible to scanpy plotting style
-    g = _setup_legend(g, remove_last=groups is not None and include_rest)
+    g = _setup_legend(
+        g, remove_last=groups is not None and include_rest, fontsize=legend_fontsize
+    )
 
     g.set_title(groupby)
     savefig_or_show("scatter", show=show, save=save)
@@ -968,8 +1133,15 @@ def scatter(
         return g
 
 
-def scatter_rank(model, groupby=None, groups=None, **kwargs):
-    group_df = sc.get.rank_genes_groups_df(model._cache.factor_adata, group=groups)
+def scatter_rank(model, groups=None, **kwargs):
+    factor_adata = _get_model_cache(model).factor_adata
+    try:
+        groupby = factor_adata.uns["rank_genes_groups"]["params"]["groupby"]
+    except KeyError as e:
+        raise ValueError(
+            "No group-wise ranking found, run `muvi.tl.rank first.`"
+        ) from e
+    group_df = sc.get.rank_genes_groups_df(factor_adata, group=groups)
     group_df["scores_abs"] = group_df["scores"].abs()
 
     relevant_factors_dict = {}
@@ -1001,3 +1173,40 @@ def scatter_rank(model, groupby=None, groups=None, **kwargs):
         gs[group] = g
     if not show:
         return gs
+
+
+def groupplot_rank(model, groups=None, pl_type=STRIPPLOT, top=1, **kwargs):
+    factor_adata = _get_model_cache(model).factor_adata
+    try:
+        groupby = factor_adata.uns["rank_genes_groups"]["params"]["groupby"]
+    except KeyError as e:
+        raise ValueError(
+            "No group-wise ranking found, run `muvi.tl.rank first.`"
+        ) from e
+    group_df = sc.get.rank_genes_groups_df(factor_adata, group=groups)
+    group_df["scores_abs"] = group_df["scores"].abs()
+
+    relevant_factors = []
+    for group in group_df["group"].unique():
+        rfs = (
+            group_df[group_df["group"] == group]
+            .sort_values("scores_abs", ascending=False)
+            .iloc[:top]["names"]
+        )
+        for rf in rfs:
+            if rf not in relevant_factors:
+                relevant_factors.append(rf)
+
+    show = kwargs.pop("show", None)
+    save = kwargs.pop("save", None)
+
+    return relevant_factors, _groupplot(
+        model,
+        relevant_factors,
+        groupby,
+        pl_type=pl_type,
+        groups=groups,
+        show=show,
+        save=save,
+        **kwargs,
+    )

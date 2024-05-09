@@ -10,7 +10,7 @@ __all__ = [
     "CheckpointCallback",
     "EarlyStoppingCallback",
     "LogCallback",
+    "get_free_gpu_idx",
     "MuVI",
     "DataGenerator",
-    "get_free_gpu_idx",
 ]

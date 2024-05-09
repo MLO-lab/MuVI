@@ -87,11 +87,11 @@ class Cache:
 
     def update_factor_metadata(self, scores):
         if self.factor_adata is not None:
-            self.factor_adata.varm[Cache.META_KEY].update(scores)
+            self.factor_adata.varm[Cache.META_KEY].update(scores.astype(np.float32))
 
     def update_cov_metadata(self, scores):
         if self.cov_adata is not None:
-            self.cov_adata.varm[Cache.META_KEY].update(scores)
+            self.cov_adata.varm[Cache.META_KEY].update(scores.astype(np.float32))
 
     def filter_factors(self, factor_idx):
         self.factor_adata.obsm[Cache.FILTERED_KEY] = (

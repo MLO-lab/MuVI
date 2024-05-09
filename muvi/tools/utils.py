@@ -1,3 +1,4 @@
+import io
 import logging
 
 from pathlib import Path
@@ -12,6 +13,7 @@ import pandas as pd
 import pyro
 import scanpy as sc
 import scipy
+import torch
 
 from scipy.optimize import linprog
 from sklearn.metrics import mean_squared_error
@@ -749,6 +751,14 @@ def to_mdata(
     return mdata
 
 
+class CPUUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+        else:
+            return super().find_class(module, name)
+
+
 def save(model, dir_path="."):
     model_path = Path(dir_path) / "model.pkl"
     params_path = Path(dir_path) / "params.save"
@@ -801,14 +811,14 @@ def save(model, dir_path="."):
     return dir_path
 
 
-def load(dir_path=".", with_params=True):
+def load(dir_path=".", with_params=True, map_location=None):
     model_path = Path(dir_path) / "model.pkl"
     params_path = Path(dir_path) / "params.save"
     factor_adata_path = Path(dir_path) / "factor.h5ad"
     cov_adata_path = Path(dir_path) / "cov.h5ad"
 
     with open(model_path, "rb") as f:
-        model = pickle.load(f)
+        model = pickle.load(f) if map_location is None else CPUUnpickler(f).load()
 
     if model._cache is not None:
         factor_adata = None
@@ -822,7 +832,7 @@ def load(dir_path=".", with_params=True):
         model._cache.factor_adata = factor_adata
         model._cache.cov_adata = cov_adata
     if with_params:
-        pyro.get_param_store().load(params_path)
+        pyro.get_param_store().load(params_path, map_location=map_location)
     # model = pyro.module("MuVI", model, update_module_params=True)  # noqa: ERA001
     return model
 

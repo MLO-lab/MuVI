@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "muvi"
-version = "0.1.1"
+version = "0.1.2"
 description = "MuVI: A multi-view latent variable model with domain-informed structured sparsity for integrating noisy feature sets."
 readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
@@ -22,12 +22,14 @@ scipy = "^1.11.3"
 statsmodels = "^0.14.0"
 seaborn = "^0.13.0"
 # https://stackoverflow.com/questions/76327419/valueerror-libcublas-so-0-9-not-found-in-the-system-path
-torch = ">=2.0.0, !=2.0.1, !=2.1.0"
-pyro-ppl = "^1.8.6"
+torch = "2.1.2"
+pyro-ppl = "1.8.6"
 scanpy = "^1.9.5"
 mudata = "^0.2.3"
 dill = "^0.3.7"
 tqdm = "^4.66.1"
+tabulate = "^0.9.0"
+kneed = "^0.8.5"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "2.20.0"
@@ -116,5 +118,6 @@ exclude_lines = [
 ]
 omit = [
     "**/tests/*",
-    "**/muvi/tools/plotting.py"
+    "**/muvi/tools/plotting.py",
+    "**/muvi/tools/external.py"
 ]

@@ -42,7 +42,7 @@ def test_save_load(data_gen):
     assert model._cache == loaded_model._cache
 
 
-def test_add_get_metadata():
+def test_add_metadata():
     model = muvi.load("test_save_load")
     metadata = pd.Series(range(model.n_samples), index=model.sample_names)
     muvi.tl.add_metadata(model, "test", metadata)
@@ -50,7 +50,7 @@ def test_add_get_metadata():
     assert (muvi.tl.get_metadata(model, "test") == metadata).all()
 
 
-def test_add_get_metadata_exist_error():
+def test_add_metadata_exist_error():
     model = muvi.load("test_save_load")
     metadata = pd.Series(range(model.n_samples), index=model.sample_names)
     muvi.tl.add_metadata(model, "test", metadata)

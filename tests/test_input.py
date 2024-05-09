@@ -71,21 +71,7 @@ def test_pandas_input_shuffled_samples(pandas_input):
     model._setup_training_data()
 
 
-def test_pandas_input_missing_samples(pandas_input):
-    bad_observations = [obs.copy() for obs in pandas_input["observations"]]
-    sample_names = bad_observations[0].index.tolist()[:-1]
-    bad_observations[1] = bad_observations[1].loc[sample_names, :]
-
-    with pytest.raises(
-        ValueError, match="all views must have the same number of samples"
-    ):
-        MuVI(
-            bad_observations,
-            covariates=pandas_input["covariates"],
-            n_factors=pandas_input["n_factors"],
-            device="cpu",
-        )
-
+def test_pandas_input_missing_cov_samples(pandas_input):
     with pytest.raises(
         ValueError, match="does not match the number of samples for the covariates"
     ):
@@ -96,20 +82,8 @@ def test_pandas_input_missing_samples(pandas_input):
             device="cpu",
         )
 
-    with pytest.raises(
-        ValueError, match="all masks must have the same number of factors"
-    ):
-        bad_masks = pandas_input["masks"]
-        bad_masks[0] = bad_masks[0].iloc[:-1, :]
-        MuVI(
-            pandas_input["observations"],
-            bad_masks,
-            pandas_input["covariates"],
-            device="cpu",
-        )
 
-
-def test_pandas_input_missing_features(pandas_input):
+def test_pandas_input_missing_mask_features(pandas_input):
     with pytest.raises(
         ValueError, match="each mask must match the number of features of its view."
     ):

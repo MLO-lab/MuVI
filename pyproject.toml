@@ -30,6 +30,8 @@ dill = "^0.3.7"
 tqdm = "^4.66.1"
 tabulate = "^0.9.0"
 kneed = "^0.8.5"
+igraph = "^0.11.5"
+leidenalg = "^0.10.2"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "2.20.0"

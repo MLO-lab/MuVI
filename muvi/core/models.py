@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from muvi.core.early_stopping import EarlyStoppingCallback
 from muvi.core.index import _make_index_unique
 from muvi.core.index import _normalize_index
 
@@ -63,7 +64,7 @@ class MuVI(PyroModule):
         observations: MultiView,
         prior_masks: Optional[MultiView] = None,
         covariates: Optional[SingleView] = None,
-        prior_confidence: Union[float, str] = 0.99,
+        prior_confidence: Optional[Union[float, str]] = None,
         n_factors: Optional[int] = None,
         view_names: Optional[list[str]] = None,
         likelihoods: Optional[Union[dict[str, str], list[str]]] = None,
@@ -84,9 +85,9 @@ class MuVI(PyroModule):
             by default None
         covariates : SingleView, optional
             Additional observed covariates, by default None
-        prior_confidence : float or string
+        prior_confidence : float or string, optional
             Confidence of prior belief from 0 to 1 (exclusive),
-            typical values are 'low' (0.95), 'med' (0.99) and 'high' (0.999),
+            typical values are 'low' (0.97), 'med' (0.99) and 'high' (0.999),
             by default 0.99
         n_factors : int, optional
             Number of latent factors,
@@ -439,15 +440,18 @@ class MuVI(PyroModule):
         }
 
     def _setup_prior_confidence(self, prior_confidence):
+        low = 0.97
+        med = 0.99
+        high = 0.999
         if prior_confidence is None:
             logger.info(
-                "No prior confidence provided, setting `prior_confidence` to 0.99."
+                f"No prior confidence provided, setting `prior_confidence` to {med}."
             )
-            prior_confidence = 0.99
+            prior_confidence = med
 
         if isinstance(prior_confidence, str):
             try:
-                prior_confidence = {"low": 0.95, "med": 0.99, "high": 0.999}[
+                prior_confidence = {"low": low, "med": med, "high": high}[
                     prior_confidence.lower()
                 ]
             except KeyError as e:
@@ -1247,14 +1251,16 @@ class MuVI(PyroModule):
     def fit(
         self,
         batch_size: int = 0,
-        n_epochs: int = 1000,
+        n_epochs: int = 0,
         n_particles: int = 0,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
         scale_elbo: bool = True,
+        early_stopping: bool = True,
         callbacks: Optional[list[Callable]] = None,
         verbose: bool = True,
         seed: Optional[int] = None,
+        **kwargs,
     ):
         """Perform inference.
 
@@ -1264,7 +1270,7 @@ class MuVI(PyroModule):
             Batch size, by default 0 (all samples)
         n_epochs : int, optional
             Number of iterations over the whole dataset,
-            by default 1000
+            by default 0 (10k steps)
         n_particles : int, optional
             Number of particles/samples used to form the ELBO (gradient) estimators,
             by default 0 (1000 // batch_size)
@@ -1274,6 +1280,8 @@ class MuVI(PyroModule):
             Whether to scale the ELBO across views, by default True
         optimizer : str, optional
             Optimizer as string, 'adam' or 'clipped', by default "clipped"
+        early_stopping : bool, optional
+            Whether to stop training early, by default True
         callbacks : list[Callable], optional
             List of callbacks during training, by default None
         verbose : bool, optional
@@ -1285,6 +1293,10 @@ class MuVI(PyroModule):
         # if invalid or out of bounds set to n_samples
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
+
+        if n_epochs is None or n_epochs == 0:
+            n_batches_per_epoch = self.n_samples // batch_size
+            n_epochs = 10000 // n_batches_per_epoch
 
         if n_particles < 1:
             n_particles = max(1, 1000 // batch_size)
@@ -1301,6 +1313,12 @@ class MuVI(PyroModule):
         training_prior_scales = training_data.pop("prior_scales", None)
         if training_prior_scales is not None:
             training_prior_scales = training_prior_scales.to(self.device)
+
+        min_epochs = kwargs.pop("min_epochs", n_epochs // 10)
+        early_stopping_callback = EarlyStoppingCallback(min_epochs, **kwargs)
+
+        if callbacks is None:
+            callbacks = []
 
         if batch_size < self.n_samples:
             logger.info(f"Using batches of size `{batch_size}`.")
@@ -1369,11 +1387,10 @@ class MuVI(PyroModule):
                     epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1
                 ):
                     pbar.set_postfix({"ELBO": epoch_loss})
-                if callbacks is not None:
-                    # TODO: dont really like this, a bit sloppy
-                    stop_early = any(callback(history) for callback in callbacks)
-                    if stop_early:
-                        break
+                for callback in callbacks:
+                    callback(history)
+                if early_stopping and early_stopping_callback(history):
+                    break
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt, stopping training and saving progress...")
 

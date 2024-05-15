@@ -4,7 +4,6 @@ from muvi import MuVI
 
 
 def test_normalize(pandas_input):
-
     observations_df = pandas_input["observations"]
     observations_array = [obs.to_numpy() for obs in observations_df]
 

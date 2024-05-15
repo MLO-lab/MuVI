@@ -15,13 +15,15 @@ import scanpy as sc
 import scipy
 import torch
 
+from kneed import KneeLocator
 from scipy.optimize import linprog
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from statsmodels.stats import multitest
 from tqdm import tqdm
 
 from muvi.core.index import _normalize_index
 from muvi.core.models import MuVI
+from muvi.tools import feature_sets as fs
 from muvi.tools.cache import Cache
 
 
@@ -120,8 +122,7 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
     if r2_thresh < 1.0:
         r2_thresh = (r2_sorted.cumsum() / r2_sorted.sum() < r2_thresh).sum() + 1
 
-    if r2_thresh > 1.0:
-        factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
+    factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
 
     factor_subset = factor_subset.tolist()
     logger.info(f"Filtering down to {len(factor_subset)} factors.")
@@ -295,7 +296,7 @@ def rmse(
     """
 
     def _rmse(y_true, y_pred):
-        return mean_squared_error(y_true, y_pred, squared=False)
+        return root_mean_squared_error(y_true, y_pred)
 
     return _recon_error(
         model,
@@ -657,6 +658,89 @@ def dendrogram(model, groupby, **kwargs):
     kwargs["use_rep"] = model_cache.use_rep
     kwargs["n_pcs"] = None
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
+
+
+def posterior_feature_sets(
+    model,
+    view_idx: Index = "all",
+    factor_idx: Index = "all",
+    r2_thresh: Union[int, float] = 0.95,
+    knee_sensitivity: float = 1.0,
+    dir_path=None,
+    **kwargs,
+):
+    model_cache = setup_cache(model)
+
+    r2_cols = [f"{Cache.METRIC_R2}_{vn}" for vn in model.view_names]
+    r2_df = model_cache.factor_metadata[r2_cols]
+
+    if r2_df.isna().all(None):
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            "Run `muvi.tl.variance_explained` to compute "
+            "the variance explained by each factor first. "
+            "Extracting the posterior feature sets across all factors."
+        )
+        r2_thresh = model.n_factors
+
+    if int(r2_thresh) == 1:
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            f"`r2_thresh` of `{r2_thresh}` is ambiguous, `r2_thresh` must be "
+            "less than 1.0 or an integer greater than 1. "
+            "Extracting the posterior feature sets across all factors."
+        )
+        r2_thresh = model.n_factors
+
+    ws = model.get_factor_loadings(view_idx, factor_idx, as_df=True)
+
+    posterior_feature_sets = {}
+
+    for view_name, view_loadings in ws.items():
+        _r2_thresh = r2_thresh
+        view_feature_sets = {}
+        r2_sorted = r2_df[f"{Cache.METRIC_R2}_{view_name}"].sort_values(ascending=False)
+        factor_subset = r2_sorted.index
+        if _r2_thresh < 1.0:
+            _r2_thresh = (r2_sorted.cumsum() / r2_sorted.sum() < _r2_thresh).sum() + 1
+
+        factor_subset = r2_sorted.iloc[: int(_r2_thresh)].index
+
+        factor_subset = factor_subset.tolist()
+        if len(factor_subset) < model.n_factors:
+            logger.info(
+                "Extracting the posterior feature sets from "
+                f"{len(factor_subset)}/{model.n_factors} "
+                f"factors for view {view_name}."
+            )
+        for factor_name in factor_subset:
+            loadings = (
+                view_loadings.loc[factor_name, :].abs().sort_values(ascending=False)
+            )
+            kn = KneeLocator(
+                range(len(loadings)),
+                loadings,
+                S=knee_sensitivity,
+                curve="convex",
+                direction="decreasing",
+                **kwargs,
+            )
+            view_feature_sets[factor_name] = loadings.iloc[: kn.knee].index.tolist()
+        posterior_feature_sets[view_name] = view_feature_sets
+
+    if dir_path is not None:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        pfs_df = pd.DataFrame(posterior_feature_sets)
+        pfs_df["name"] = pfs_df.index.astype(str)
+        for view_name in ws:
+            feature_sets = fs.from_dataframe(
+                pfs_df.loc[~pfs_df[view_name].isna()],
+                name=f"muvi_posterior_{view_name}",
+                features_col=view_name,
+            )
+            feature_sets.to_gmt(Path(dir_path) / f"muvi_posterior_{view_name}.gmt")
+
+    return posterior_feature_sets
 
 
 def from_adata(

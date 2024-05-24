@@ -1,6 +1,7 @@
 """Collection of training callbacks."""
 import numpy as np
 
+
 class EarlyStoppingCallback:
     def __init__(
         self,

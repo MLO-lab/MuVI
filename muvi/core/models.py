@@ -22,8 +22,8 @@ from pyro.nn import PyroParam
 from pyro.optim import Adam
 from pyro.optim import ClippedAdam
 from tabulate import tabulate
+from tensordict import TensorDict
 from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from muvi.core.early_stopping import EarlyStoppingCallback
@@ -38,24 +38,8 @@ SingleView = Union[np.ndarray, pd.DataFrame]
 MultiView = Union[dict[str, SingleView], list[SingleView]]
 
 
-class DictDataset(Dataset):
-    """Dictionary based PyTorch dataset."""
-
-    def __init__(self, tensor_dict, idx_key="sample_idx", **kwargs):
-        self.tensor_dict = tensor_dict
-        self.idx_key = idx_key
-        # just stores them
-        self.kwargs = kwargs
-        self._len = tensor_dict[next(iter(tensor_dict))].shape[0]
-
-    def __len__(self):
-        return self._len
-
-    def __getitem__(self, index):
-        item = {self.idx_key: index}
-        for k, v in self.tensor_dict.items():
-            item[k] = v[index]
-        return item
+def identity(x):
+    return x
 
 
 class MuVI(PyroModule):
@@ -64,7 +48,7 @@ class MuVI(PyroModule):
         observations: MultiView,
         prior_masks: Optional[MultiView] = None,
         covariates: Optional[SingleView] = None,
-        prior_confidence: Optional[Union[float, str]] = None,
+        prior_confidence: Optional[Union[float, str]] = "med",
         n_factors: Optional[int] = None,
         view_names: Optional[list[str]] = None,
         likelihoods: Optional[Union[dict[str, str], list[str]]] = None,
@@ -87,11 +71,13 @@ class MuVI(PyroModule):
             Additional observed covariates, by default None
         prior_confidence : float or string, optional
             Confidence of prior belief from 0 to 1 (exclusive),
-            typical values are 'low' (0.97), 'med' (0.99) and 'high' (0.999),
-            by default 0.99
+            typical values are 'low' (0.99), 'med' (0.995) and 'high' (0.999),
+            by default 'med'
         n_factors : int, optional
             Number of latent factors,
             can be omitted when providing prior masks,
+            or it can be used to introduce additional dense factors
+            if larger than the informed factors,
             by default None
         view_names : list[str], optional
             List of names for each view,
@@ -440,8 +426,8 @@ class MuVI(PyroModule):
         }
 
     def _setup_prior_confidence(self, prior_confidence):
-        low = 0.97
-        med = 0.99
+        low = 0.99
+        med = 0.995
         high = 0.999
         if prior_confidence is None:
             logger.info(
@@ -1113,16 +1099,22 @@ class MuVI(PyroModule):
             Whether the build was successful
         """
         if not self._built:
+            prior_scales = None
             if not self._informed:
                 logger.warning(
                     "No prior feature sets provided, running model uninformed."
                 )
+            else:
+                prior_scales = [
+                    torch.Tensor(self.prior_scales[vn]) for vn in self.view_names
+                ]
 
             self._model = MuVIModel(
                 self.n_samples,
                 n_subsamples=batch_size,
                 n_features=[self.n_features[vn] for vn in self.view_names],
                 n_factors=self.n_factors,
+                prior_scales=prior_scales,
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
@@ -1233,18 +1225,11 @@ class MuVI(PyroModule):
         if self.covariates is not None:
             train_covs = torch.Tensor(self.covariates)
 
-        train_prior_scales = None
-        if self._informed:
-            train_prior_scales = torch.cat(
-                [torch.Tensor(self.prior_scales[vn]) for vn in self.view_names], 1
-            )
-
         # make sure keys match the arguments in the forward method of the MuVIModel
         training_data = {
             "obs": train_obs,
             "mask": mask_obs,
             "covs": train_covs,
-            "prior_scales": train_prior_scales,
         }
         return {k: v for k, v in training_data.items() if v is not None}
 
@@ -1279,7 +1264,7 @@ class MuVI(PyroModule):
         scale_elbo : bool, optional
             Whether to scale the ELBO across views, by default True
         optimizer : str, optional
-            Optimizer as string, 'adam' or 'clipped', by default "clipped"
+            Optimizer as string, "adam" or "clipped", by default "clipped"
         early_stopping : bool, optional
             Whether to stop training early, by default True
         callbacks : list[Callable], optional
@@ -1294,8 +1279,8 @@ class MuVI(PyroModule):
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
 
+        n_batches_per_epoch = max(1, self.n_samples // batch_size)
         if n_epochs is None or n_epochs == 0:
-            n_batches_per_epoch = self.n_samples // batch_size
             n_epochs = 10000 // n_batches_per_epoch
 
         if n_particles < 1:
@@ -1310,12 +1295,12 @@ class MuVI(PyroModule):
         svi = self._setup_svi(opt, n_particles, scale=True)
         logger.info("Preparing training data...")
         training_data = self._setup_training_data()
-        training_prior_scales = training_data.pop("prior_scales", None)
-        if training_prior_scales is not None:
-            training_prior_scales = training_prior_scales.to(self.device)
 
         min_epochs = kwargs.pop("min_epochs", n_epochs // 10)
-        early_stopping_callback = EarlyStoppingCallback(min_epochs, **kwargs)
+        patience = kwargs.pop("patience", max(10, int(5 * n_batches_per_epoch)))
+        early_stopping_callback = EarlyStoppingCallback(
+            min_epochs, patience=patience, **kwargs
+        )
 
         if callbacks is None:
             callbacks = []
@@ -1323,11 +1308,17 @@ class MuVI(PyroModule):
         if batch_size < self.n_samples:
             logger.info(f"Using batches of size `{batch_size}`.")
 
+            training_data = TensorDict(
+                dict(training_data.items()), batch_size=[self.n_samples]
+            )
+            training_data["sample_idx"] = torch.arange(self.n_samples)
+
             data_loader = DataLoader(
-                DictDataset(training_data, idx_key="sample_idx"),
+                training_data,
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=1,
+                collate_fn=identity,
                 pin_memory=str(self.device) != "cpu",
                 drop_last=False,
             )
@@ -1335,10 +1326,7 @@ class MuVI(PyroModule):
             def _step():
                 iteration_loss = 0
                 for _, tensor_dict in enumerate(data_loader):
-                    iteration_loss += svi.step(
-                        **{k: v.to(self.device) for k, v in tensor_dict.items()},
-                        prior_scales=training_prior_scales,
-                    )
+                    iteration_loss += svi.step(**tensor_dict.to(self.device))
                 return iteration_loss
 
         else:
@@ -1347,11 +1335,7 @@ class MuVI(PyroModule):
             training_data = {k: v.to(self.device) for k, v in training_data.items()}
 
             def _step():
-                return svi.step(
-                    None,
-                    **training_data,
-                    prior_scales=training_prior_scales,
-                )
+                return svi.step(None, **training_data)
 
         if seed is not None:
             try:
@@ -1390,6 +1374,7 @@ class MuVI(PyroModule):
                 for callback in callbacks:
                     callback(history)
                 if early_stopping and early_stopping_callback(history):
+                    stop_early = True
                     break
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt, stopping training and saving progress...")
@@ -1418,6 +1403,7 @@ class MuVIModel(PyroModule):
         n_subsamples: int,
         n_features: list[int],
         n_factors: int,
+        prior_scales: Optional[list[torch.Tensor]],
         n_covariates: int,
         likelihoods: list[str],
         global_prior_scale: float = 1.0,
@@ -1439,6 +1425,9 @@ class MuVIModel(PyroModule):
             Number of features as list for each view
         n_factors : int
             Number of latent factors
+        prior_scales : list[torch.Tensor], optional
+            Local prior scales with prior information,
+            by default None (uninformed)
         n_covariates : int
             Number of covariates
         likelihoods : list[str], optional
@@ -1464,6 +1453,9 @@ class MuVIModel(PyroModule):
         self.feature_offsets = [0, *np.cumsum(self.n_features).tolist()]
         self.n_views = len(self.n_features)
         self.n_factors = n_factors
+        self.prior_scales = prior_scales
+        if self.prior_scales is not None:
+            self.prior_scales = torch.cat(self.prior_scales, 1).to(device)
         self.n_covariates = n_covariates
         self.likelihoods = likelihoods
         self.same_likelihood = len(set(self.likelihoods)) == 1
@@ -1532,7 +1524,6 @@ class MuVIModel(PyroModule):
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: Optional[torch.Tensor] = None,
-        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Generate samples.
 
@@ -1544,9 +1535,6 @@ class MuVIModel(PyroModule):
             Binary mask of missing data
         covs : torch.Tensor, optional
             Additional covariate matrix, by default None
-        prior_scales : torch.Tensor, optional
-            Local prior scales with prior information,
-            by default None
 
         Returns
         -------
@@ -1596,10 +1584,10 @@ class MuVIModel(PyroModule):
                             ),
                         )
                         c = torch.sqrt(output_dict[f"caux_{m}"])
-                        if prior_scales is not None:
+                        if self.prior_scales is not None:
                             c = (
                                 c
-                                * prior_scales[
+                                * self.prior_scales[
                                     :,
                                     self.feature_offsets[m] : self.feature_offsets[
                                         m + 1
@@ -1869,7 +1857,6 @@ class MuVIGuide(PyroModule):
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: Optional[torch.Tensor] = None,
-        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Approximate posterior."""
         output_dict = {}

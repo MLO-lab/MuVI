@@ -18,7 +18,9 @@ def test_early_stopping_callback(data_gen):
         optimizer="clipped",
         verbose=0,
         seed=0,
-        callbacks=[EarlyStoppingCallback(10, min_epochs=1, tolerance=100, patience=1)],
+        min_epochs=1, 
+        tolerance=100, 
+        patience=1,
     )
 
     assert model._training_log["stop_early"]

@@ -21,7 +21,7 @@ class FeatureSet:
         self,
         features: Collection[str],
         name: str,
-        description: str = "",
+        description: str = "NO_DESC",
     ):
         self.name = name
         self.features = frozenset(features)
@@ -284,7 +284,8 @@ class FeatureSets:
         self,
         features: Iterable[str],
         min_fraction: float = 0.5,
-        min_count: int = 1,
+        min_count: int = 5,
+        max_count: Optional[int] = None,
         keep: Optional[Iterable[str]] = None,
         subset: bool = True,
     ):
@@ -300,7 +301,11 @@ class FeatureSets:
         min_count : int, optional
             Minimum size of the intersection set
             between a feature set and the set of `features`,
-            by default 1
+            by default 5
+        max_count : int, optional
+            Maximum size of the intersection set
+            between a feature set and the set of `features`,
+            by default None
         keep : Iterable[str], optional
             Feature sets to keep regardless of the filter conditions,
             by default None
@@ -327,7 +332,11 @@ class FeatureSets:
             intersection = features & feature_set.features
             count = len(intersection)
             fraction = count / len(feature_set)
-            if count >= min_count and fraction >= min_fraction:
+            if (
+                count >= min_count
+                and fraction >= min_fraction
+                and (max_count is None or count <= max_count)
+            ):
                 feature_set_subset.add(feature_set)
 
         filtered_feature_sets = FeatureSets(feature_set_subset, name=self.name)
@@ -706,11 +715,14 @@ def from_dataframe(
     """
     feature_sets = set()
     for _, row in df.iterrows():
+        description = "NO_DESC"
+        if desc_col is not None and not pd.isna(row[desc_col]):
+            description = row[desc_col]
         feature_sets.add(
             FeatureSet(
                 row[features_col],
                 name=row[name_col],
-                description=desc_col is not None and row[desc_col],
+                description=description,
             )
         )
     return FeatureSets(feature_sets, name=name, **kwargs)

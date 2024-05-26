@@ -1,4 +1,5 @@
 """Data module."""
+
 import itertools
 import logging
 import math

@@ -1,6 +1,7 @@
 import logging
 import time
 
+from importlib.metadata import version
 from typing import Any
 from typing import Callable
 from typing import Optional
@@ -20,10 +21,13 @@ from pyro.nn import PyroModule
 from pyro.nn import PyroParam
 from pyro.optim import Adam
 from pyro.optim import ClippedAdam
+from tabulate import tabulate
+from tensordict import TensorDict
 from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from muvi.core.early_stopping import EarlyStoppingCallback
+from muvi.core.index import _make_index_unique
 from muvi.core.index import _normalize_index
 
 
@@ -34,24 +38,8 @@ SingleView = Union[np.ndarray, pd.DataFrame]
 MultiView = Union[dict[str, SingleView], list[SingleView]]
 
 
-class DictDataset(Dataset):
-    """Dictionary based PyTorch dataset."""
-
-    def __init__(self, tensor_dict, idx_key="sample_idx", **kwargs):
-        self.tensor_dict = tensor_dict
-        self.idx_key = idx_key
-        # just stores them
-        self.kwargs = kwargs
-        self._len = tensor_dict[next(iter(tensor_dict))].shape[0]
-
-    def __len__(self):
-        return self._len
-
-    def __getitem__(self, index):
-        item = {self.idx_key: index}
-        for k, v in self.tensor_dict.items():
-            item[k] = v[index]
-        return item
+def identity(x):
+    return x
 
 
 class MuVI(PyroModule):
@@ -60,12 +48,14 @@ class MuVI(PyroModule):
         observations: MultiView,
         prior_masks: Optional[MultiView] = None,
         covariates: Optional[SingleView] = None,
-        prior_confidence: Union[float, str] = 0.99,
+        prior_confidence: Optional[Union[float, str]] = "med",
         n_factors: Optional[int] = None,
         view_names: Optional[list[str]] = None,
         likelihoods: Optional[Union[dict[str, str], list[str]]] = None,
         reg_hs: bool = True,
         nmf: Optional[Union[dict[str, bool], list[bool]]] = None,
+        pos_transform: str = "relu",
+        normalize: bool = True,
         device: str = "cuda",
     ):
         """MuVI module.
@@ -79,13 +69,15 @@ class MuVI(PyroModule):
             by default None
         covariates : SingleView, optional
             Additional observed covariates, by default None
-        prior_confidence : float or string
+        prior_confidence : float or string, optional
             Confidence of prior belief from 0 to 1 (exclusive),
-            typical values are 'low' (0.95), 'med' (0.99) and 'high' (0.999),
-            by default 0.99
+            typical values are 'low' (0.99), 'med' (0.995) and 'high' (0.999),
+            by default 'med'
         n_factors : int, optional
             Number of latent factors,
             can be omitted when providing prior masks,
+            or it can be used to introduce additional dense factors
+            if larger than the informed factors,
             by default None
         view_names : list[str], optional
             List of names for each view,
@@ -102,17 +94,22 @@ class MuVI(PyroModule):
         nmf : Union[dict[str, bool], list[bool]], optional
             Whether to use non-negative matrix factorization,
             by default False
+        normalize : bool, optional
+            Whether to normalize observations,
+            by default True
         device : str, optional
             Device to run computations on, by default "cuda" (GPU)
         """
         super().__init__(name="MuVI")
         self.observations = self._setup_observations(observations, view_names)
+        self.prior_confidence = self._setup_prior_confidence(prior_confidence)
         self.prior_masks, self.prior_scales = self._setup_prior_masks(
-            prior_masks, prior_confidence, n_factors
+            prior_masks, n_factors
         )
         self.covariates = self._setup_covariates(covariates)
         self.likelihoods = self._setup_likelihoods(likelihoods)
         self.nmf = self._setup_nmf(nmf)
+        self.pos_transform = pos_transform
 
         self.reg_hs = reg_hs
         self._informed = self.prior_masks is not None
@@ -122,6 +119,10 @@ class MuVI(PyroModule):
                 "setting `reg_hs` to True."
             )
             self.reg_hs = True
+
+        self.normalize = normalize
+        if self.normalize:
+            self.observations = self._normalize_observations()
 
         self.device = self._setup_device(device)
         self.to(self.device)
@@ -133,12 +134,49 @@ class MuVI(PyroModule):
         self._training_log: dict[str, Any] = {}
         self._cache = None
 
-    @property
-    def _factor_signs(self):
-        signs = 1.0
+        self._version = version("muvi")
+
+    def __repr__(self):
+        table = [
+            ["n_views", self.n_views],
+            ["n_samples", self.n_samples],
+            [
+                "n_features",
+                ", ".join([f"{vn}: {self.n_features[vn]}" for vn in self.view_names]),
+            ],
+            ["n_factors", self.n_factors],
+            ["prior_confidence", self.prior_confidence],
+            ["n_covariates", self.n_covariates],
+            [
+                "likelihoods",
+                ", ".join([f"{vn}: {self.likelihoods[vn]}" for vn in self.view_names]),
+            ],
+            ["nmf", ", ".join([f"{vn}: {self.nmf[vn]}" for vn in self.view_names])],
+            ["reg_hs", self.reg_hs],
+        ]
+
+        if any(self.nmf.values()):
+            table.append(["pos_transform", self.pos_transform])
+        table.append(["device", self.device])
+
+        header = f" MuVI version {self._version} "
+        body = tabulate(table, headers=["Parameter", "Value"], tablefmt="github")
+        row_len = len(body.split("\n")[0])
+        left_padding_len = (row_len - len(header) - 2) // 2
+
+        empty_line = "|" + "=" * (row_len - 2) + "|\n"
+        header = "|" + " " * left_padding_len + header
+        header = (
+            empty_line + header + " " * (row_len - len(header) - 1) + "|\n" + empty_line
+        )
+        output = header + body + "\n" + empty_line
+        return output
+
+    def _get_factor_signs(self):
+        signs = np.ones(self.n_factors, dtype=np.float32)
         # only compute signs if model is trained
         # and there is no nmf constraint
-        if self._trained and not any(self.nmf.values()):
+        if self._trained:
             w = self._guide.get_w()
             # TODO: looking at top loadings works better than including all
             # 100 feels a bit arbitrary though
@@ -147,6 +185,9 @@ class MuVI(PyroModule):
             )
             signs = (w.sum(axis=1) > 0) * 2 - 1
 
+        # if nmf is enabled, all factors are positive
+        if any(self.nmf.values()):
+            signs = np.ones(self.n_factors, dtype=np.float32)
         return pd.Series(signs, index=self.factor_names, dtype=np.float32)
 
     def _setup_device(self, device):
@@ -170,8 +211,78 @@ class MuVI(PyroModule):
     def _validate_index(self, idx):
         if not is_string_dtype(idx):
             logger.warning("Transforming to str index.")
-            return idx.astype(str)
+            idx = idx.astype(str)
+        if not idx.is_unique:
+            logger.warning("Making index unique.")
+            idx = _make_index_unique(idx)
         return idx
+
+    def _normalize_observations(self):
+        logger.info("Normalizing observations.")
+        for vn, obs in self.observations.items():
+            if self.nmf[vn]:
+                logger.info(f"Setting min value of view `{vn}` to 0.")
+                obs -= np.nanmin(obs, axis=0)
+            else:
+                logger.info(f"Centering features of view `{vn}`.")
+                obs -= np.nanmean(obs, axis=0)
+            global_std = np.nanstd(obs)
+            logger.info(
+                f"Setting global standard deviation to 1.0 (from {global_std:.3f})."
+            )
+            obs /= global_std
+
+        return self.observations
+
+    def _merge(self, matrix_collection, method="union"):
+        all_array = all(
+            isinstance(matrix, np.ndarray) for matrix in matrix_collection.values()
+        )
+        all_dataframe = all(
+            isinstance(matrix, pd.DataFrame) for matrix in matrix_collection.values()
+        )
+
+        if not all_array and not all_dataframe:
+            raise ValueError(
+                "All input must be of the same type, either np.ndarray or pd.DataFrame."
+            )
+
+        if all_array:
+            matrix_collection = {
+                k: pd.DataFrame(matrix) for k, matrix in matrix_collection.items()
+            }
+
+        key_list = []
+        value_list = []
+        for k, v in matrix_collection.items():
+            key_list.append(k)
+            value_list.append(v)
+
+        index_offsets = [0, *list(np.cumsum([v.shape[1] for v in value_list]))]
+
+        if method == "intersection":
+            merged_matrix_collection = pd.concat(value_list, axis=1, join="inner")
+        elif method == "union":
+            merged_matrix_collection = pd.concat(value_list, axis=1, join="outer")
+        else:
+            raise ValueError(
+                'Invalid merge method. Please choose either "intersection" or "union".'
+            )
+
+        merged_matrix_collection = {
+            k: merged_matrix_collection.iloc[
+                :, index_offsets[i] : index_offsets[i + 1]
+            ].copy()
+            for i, k in enumerate(key_list)
+        }
+
+        if all_array:
+            merged_matrix_collection = {
+                k: v.to_numpy(dtype=np.float32)
+                for k, v in merged_matrix_collection.items()
+            }
+
+        return merged_matrix_collection
 
     def _setup_views(self, observations, view_names):
         if view_names is None:
@@ -210,7 +321,7 @@ class MuVI(PyroModule):
                 "using only the subset of views defined in `view_names`."
             )
 
-        observations = {vn: observations[vn] for vn in view_names}
+        observations = self._merge({vn: observations[vn] for vn in view_names})
 
         n_views = len(observations)
         if n_views == 1:
@@ -300,7 +411,7 @@ class MuVI(PyroModule):
             )
 
         observations = self._setup_views(observations, view_names)
-        # from now on only working with nested dictonaries
+        # from now on only working with dictonaries
         observations = self._setup_samples(observations)
         observations = self._setup_features(observations)
 
@@ -314,7 +425,35 @@ class MuVI(PyroModule):
             for vn, obs in observations.items()
         }
 
-    def _setup_prior_masks(self, masks, confidence, n_factors):
+    def _setup_prior_confidence(self, prior_confidence):
+        low = 0.99
+        med = 0.995
+        high = 0.999
+        if prior_confidence is None:
+            logger.info(
+                f"No prior confidence provided, setting `prior_confidence` to {med}."
+            )
+            prior_confidence = med
+
+        if isinstance(prior_confidence, str):
+            try:
+                prior_confidence = {"low": low, "med": med, "high": high}[
+                    prior_confidence.lower()
+                ]
+            except KeyError as e:
+                raise KeyError(
+                    "Invalid prior confidence, please provide one of `low`, `med`,"
+                    " `high` or a positive value less than 1."
+                ) from e
+
+        if not (0 < prior_confidence < 1.0):
+            raise ValueError(
+                "Invalid prior confidence, please provide a positive value less than 1."
+            )
+
+        return prior_confidence
+
+    def _setup_prior_masks(self, masks, n_factors):
         informed = masks is not None and len(masks) > 0
         valid_n_factors = n_factors is not None and n_factors > 0
         if not informed and not valid_n_factors:
@@ -330,29 +469,11 @@ class MuVI(PyroModule):
             self.factor_names = pd.Index([f"factor_{k}" for k in range(n_factors)])
             return None, None
 
-        if confidence is None:
-            logger.info(
-                "No prior confidence provided, setting `prior_confidence` to 0.99."
-            )
-            confidence = 0.99
-
-        if isinstance(confidence, str):
-            try:
-                confidence = {"low": 0.95, "med": 0.99, "high": 0.999}[
-                    confidence.lower()
-                ]
-            except KeyError as e:
-                logger.error(e)
-                raise
-
-        if not (0 < confidence < 1.0):
-            raise ValueError(
-                "Invalid prior confidence, please provide a positive value less than 1."
-            )
-
         # if list convert to dict
         if isinstance(masks, list):
             masks = {self.view_names[m]: mask for m, mask in enumerate(masks)}
+
+        masks = self._merge(masks)
 
         informed_views = [vn for vn in self.view_names if vn in masks]
 
@@ -394,20 +515,87 @@ class MuVI(PyroModule):
             view_mask = masks[vn]
             if view_mask.shape[0] != n_prior_factors:
                 raise ValueError(
-                    f"Mask `{vn}` has {view_mask.shape[0]} factors "
+                    f"Mask of `{vn}` has {view_mask.shape[0]} factors "
                     f"instead of {n_prior_factors}, "
                     "all masks must have the same number of factors."
                 )
-            if view_mask.shape[1] != self.n_features[vn]:
-                raise ValueError(
-                    f"Mask `{vn}` has {view_mask.shape[1]} features "
-                    f"instead of {self.n_features[vn]}, "
-                    "each mask must match the number of features of its view."
-                )
+
+            n_features_view = self.n_features[vn]
+
+            if isinstance(view_mask, np.ndarray):
+                logger.info("np.ndarray detected.")
+                n_features_mask = view_mask.shape[1]
+                if n_features_mask != n_features_view:
+                    logger.warning(
+                        f"Mask `{vn}` has {n_features_mask} features "
+                        f"instead of {n_features_view}, "
+                        "matching mask features to the view."
+                    )
+
+                    if n_features_mask > n_features_view:
+                        # clip to the number of view features
+                        logger.info(
+                            "Mask has more features than expected, "
+                            f"keeping only the first {n_features_view} features."
+                        )
+                        view_mask = np.copy(view_mask[:, :n_features_view])
+                    else:
+                        # pad with False to match the number of view features
+                        logger.info(
+                            "Mask has fewer features than expected, "
+                            "padding the remaining features with False."
+                        )
+                        view_mask = np.concatenate(
+                            [
+                                view_mask,
+                                np.zeros(
+                                    (n_factors, n_features_view - n_features_mask)
+                                ),
+                            ],
+                            axis=1,
+                        )
 
             if isinstance(view_mask, pd.DataFrame):
                 logger.info("pd.DataFrame detected.")
 
+                feature_intersection = [
+                    fn for fn in self.feature_names[vn] if fn in view_mask.columns
+                ]
+                n_feature_intersection = len(feature_intersection)
+                if n_feature_intersection == 0:
+                    raise ValueError(
+                        f"None of the feature names for mask `{vn}` "
+                        "match the feature names of its corresponding view. "
+                        "Possible indication of passing np.array observations "
+                        "with pd.DataFrame prior masks."
+                    )
+                if n_feature_intersection < n_features_view:
+                    # pad with False to match the number of view features
+                    logger.info(
+                        "Mask has fewer features than expected, "
+                        "padding the remaining features with False."
+                    )
+                    missing_features = [
+                        fn
+                        for fn in self.feature_names[vn]
+                        if fn not in view_mask.columns
+                    ]
+                    view_mask = pd.concat(
+                        [
+                            view_mask,
+                            pd.DataFrame(
+                                False,
+                                index=view_mask.index,
+                                columns=missing_features,
+                            ),
+                        ],
+                        axis=1,
+                    )
+
+                    feature_intersection += missing_features
+
+                # otherwise simply subset features to the ones present
+                view_mask = view_mask.loc[:, feature_intersection].copy()
                 mask_factor_names = view_mask.index.copy()
                 if factor_names is None:
                     logger.info(
@@ -420,7 +608,7 @@ class MuVI(PyroModule):
                         f"do not match the factor names of mask `{informed_views[0]}`, "
                         f"sorting names according to mask `{informed_views[0]}`."
                     )
-                    masks[vn] = view_mask.loc[factor_names, :]
+                    view_mask = view_mask.loc[factor_names, :]
 
                 if any(self.feature_names[vn] != view_mask.columns):
                     logger.info(
@@ -428,7 +616,9 @@ class MuVI(PyroModule):
                         "do not match the feature names of its corresponding view, "
                         "sorting names according to the view features."
                     )
-                    masks[vn] = view_mask.loc[:, self.feature_names[vn]]
+                    view_mask = view_mask.loc[:, self.feature_names[vn]]
+
+            masks[vn] = view_mask
 
         if factor_names is None:
             factor_names = [f"factor_{k}" for k in range(n_prior_factors)]
@@ -457,10 +647,19 @@ class MuVI(PyroModule):
             }
 
         prior_scales = {
-            vn: np.clip(vm.astype(np.float32) + (1.0 - confidence), 1e-4, 1.0)
+            vn: np.clip(
+                vm.astype(np.float32) + (1.0 - self.prior_confidence), 1e-8, 1.0
+            )
             for vn, vm in prior_masks.items()
         }
+
+        if n_dense_factors > 0:
+            dense_scale = 1.0
+            for vn in self.view_names:
+                prior_scales[vn][n_prior_factors:, :] = dense_scale
+
         self.n_factors = n_factors
+        self.n_dense_factors = n_dense_factors
         return prior_masks, prior_scales
 
     def _setup_likelihoods(self, likelihoods):
@@ -488,6 +687,49 @@ class MuVI(PyroModule):
         if covariates is not None:
             n_covariates = covariates.shape[1]
 
+        if isinstance(covariates, np.ndarray):
+            logger.info("np.ndarray detected.")
+            n_samples_cov = covariates.shape[0]
+            if n_samples_cov != self.n_samples:
+                logger.warning(
+                    f"Covariates have {n_samples_cov} samples "
+                    f"instead of {self.n_samples}, matching samples."
+                )
+
+                if n_samples_cov > self.n_samples:
+                    logger.info(
+                        "Covariates have more samples than expected, "
+                        f"keeping only the first {n_samples_cov} samples."
+                    )
+                    covariates = np.copy(covariates[: self.n_samples, :])
+                else:
+                    raise ValueError(
+                        "Covariates have fewer samples than expected, "
+                        "current version does not handle missing covariates"
+                    )
+
+        if isinstance(covariates, pd.DataFrame):
+            logger.info("pd.DataFrame detected.")
+
+            sample_intersection = [
+                sn for sn in self.sample_names if sn in covariates.index
+            ]
+            n_sample_intersection = len(sample_intersection)
+            if n_sample_intersection == 0:
+                raise ValueError(
+                    "None of the sample names for the covariates "
+                    "match the sample names of the observations. "
+                    "Possible indication of passing np.array observations "
+                    "with pd.DataFrame covariates."
+                )
+            if n_sample_intersection < self.n_samples:
+                raise ValueError(
+                    "Covariates have fewer samples than expected, "
+                    "current version does not handle missing covariates"
+                )
+
+            covariates = covariates.loc[sample_intersection, :].copy()
+
         covariate_names = None
         if isinstance(covariates, pd.DataFrame):
             logger.info("pd.DataFrame detected.")
@@ -511,7 +753,7 @@ class MuVI(PyroModule):
             covariate_names = pd.Index([f"covariate_{k}" for k in range(n_covariates)])
 
         self.n_covariates = n_covariates
-        self.covariate_names = covariate_names
+        self.covariate_names = self._validate_index(covariate_names)
         return covariates
 
     def _raise_untrained_error(self):
@@ -848,7 +1090,7 @@ class MuVI(PyroModule):
         self._raise_untrained_error()
 
         ws = self._guide.get_w(as_list=True)
-        ws = [w * self._factor_signs.to_numpy()[:, np.newaxis] for w in ws]
+        ws = [w * self._get_factor_signs().to_numpy()[:, np.newaxis] for w in ws]
         return self._get_view_attr(
             {vn: ws[m] for m, vn in enumerate(self.view_names)},
             view_idx,
@@ -920,7 +1162,7 @@ class MuVI(PyroModule):
         self._raise_untrained_error()
 
         return self._get_sample_attr(
-            self._guide.get_z() * self._factor_signs.to_numpy(),
+            self._guide.get_z() * self._get_factor_signs().to_numpy(),
             sample_idx,
             other_idx=factor_idx,
             other_names=self.factor_names,
@@ -969,20 +1211,27 @@ class MuVI(PyroModule):
             Whether the build was successful
         """
         if not self._built:
+            prior_scales = None
             if not self._informed:
                 logger.warning(
                     "No prior feature sets provided, running model uninformed."
                 )
+            else:
+                prior_scales = [
+                    torch.Tensor(self.prior_scales[vn]) for vn in self.view_names
+                ]
 
             self._model = MuVIModel(
                 self.n_samples,
                 n_subsamples=batch_size,
                 n_features=[self.n_features[vn] for vn in self.view_names],
                 n_factors=self.n_factors,
+                prior_scales=prior_scales,
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
                 nmf=[self.nmf[vn] for vn in self.view_names],
+                pos_transform=self.pos_transform,
                 scale_elbo=scale_elbo,
                 device=self.device,
             )
@@ -1088,32 +1337,27 @@ class MuVI(PyroModule):
         if self.covariates is not None:
             train_covs = torch.Tensor(self.covariates)
 
-        train_prior_scales = None
-        if self._informed:
-            train_prior_scales = torch.cat(
-                [torch.Tensor(self.prior_scales[vn]) for vn in self.view_names], 1
-            )
-
         # make sure keys match the arguments in the forward method of the MuVIModel
         training_data = {
             "obs": train_obs,
             "mask": mask_obs,
             "covs": train_covs,
-            "prior_scales": train_prior_scales,
         }
         return {k: v for k, v in training_data.items() if v is not None}
 
     def fit(
         self,
         batch_size: int = 0,
-        n_epochs: int = 1000,
+        n_epochs: int = 0,
         n_particles: int = 0,
         learning_rate: float = 0.005,
         optimizer: str = "clipped",
         scale_elbo: bool = True,
+        early_stopping: bool = True,
         callbacks: Optional[list[Callable]] = None,
         verbose: bool = True,
         seed: Optional[int] = None,
+        **kwargs,
     ):
         """Perform inference.
 
@@ -1123,7 +1367,7 @@ class MuVI(PyroModule):
             Batch size, by default 0 (all samples)
         n_epochs : int, optional
             Number of iterations over the whole dataset,
-            by default 1000
+            by default 0 (10k steps)
         n_particles : int, optional
             Number of particles/samples used to form the ELBO (gradient) estimators,
             by default 0 (1000 // batch_size)
@@ -1132,7 +1376,9 @@ class MuVI(PyroModule):
         scale_elbo : bool, optional
             Whether to scale the ELBO across views, by default True
         optimizer : str, optional
-            Optimizer as string, 'adam' or 'clipped', by default "clipped"
+            Optimizer as string, "adam" or "clipped", by default "clipped"
+        early_stopping : bool, optional
+            Whether to stop training early, by default True
         callbacks : list[Callable], optional
             List of callbacks during training, by default None
         verbose : bool, optional
@@ -1144,6 +1390,10 @@ class MuVI(PyroModule):
         # if invalid or out of bounds set to n_samples
         if batch_size is None or not (0 < batch_size <= self.n_samples):
             batch_size = self.n_samples
+
+        n_batches_per_epoch = max(1, self.n_samples // batch_size)
+        if n_epochs is None or n_epochs == 0:
+            n_epochs = 10000 // n_batches_per_epoch
 
         if n_particles < 1:
             n_particles = max(1, 1000 // batch_size)
@@ -1157,18 +1407,30 @@ class MuVI(PyroModule):
         svi = self._setup_svi(opt, n_particles, scale=True)
         logger.info("Preparing training data...")
         training_data = self._setup_training_data()
-        training_prior_scales = training_data.pop("prior_scales", None)
-        if training_prior_scales is not None:
-            training_prior_scales = training_prior_scales.to(self.device)
+
+        min_epochs = kwargs.pop("min_epochs", n_epochs // 10)
+        patience = kwargs.pop("patience", max(10, int(5 * n_batches_per_epoch)))
+        early_stopping_callback = EarlyStoppingCallback(
+            min_epochs, patience=patience, **kwargs
+        )
+
+        if callbacks is None:
+            callbacks = []
 
         if batch_size < self.n_samples:
             logger.info(f"Using batches of size `{batch_size}`.")
 
+            training_data = TensorDict(
+                dict(training_data.items()), batch_size=[self.n_samples]
+            )
+            training_data["sample_idx"] = torch.arange(self.n_samples)
+
             data_loader = DataLoader(
-                DictDataset(training_data, idx_key="sample_idx"),
+                training_data,
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=1,
+                collate_fn=identity,
                 pin_memory=str(self.device) != "cpu",
                 drop_last=False,
             )
@@ -1176,10 +1438,7 @@ class MuVI(PyroModule):
             def _step():
                 iteration_loss = 0
                 for _, tensor_dict in enumerate(data_loader):
-                    iteration_loss += svi.step(
-                        **{k: v.to(self.device) for k, v in tensor_dict.items()},
-                        prior_scales=training_prior_scales,
-                    )
+                    iteration_loss += svi.step(**tensor_dict.to(self.device))
                 return iteration_loss
 
         else:
@@ -1188,11 +1447,7 @@ class MuVI(PyroModule):
             training_data = {k: v.to(self.device) for k, v in training_data.items()}
 
             def _step():
-                return svi.step(
-                    None,
-                    **training_data,
-                    prior_scales=training_prior_scales,
-                )
+                return svi.step(None, **training_data)
 
         if seed is not None:
             try:
@@ -1228,11 +1483,11 @@ class MuVI(PyroModule):
                     epoch_idx % window_size == 0 or epoch_idx == n_epochs - 1
                 ):
                     pbar.set_postfix({"ELBO": epoch_loss})
-                if callbacks is not None:
-                    # TODO: dont really like this, a bit sloppy
-                    stop_early = any(callback(history) for callback in callbacks)
-                    if stop_early:
-                        break
+                for callback in callbacks:
+                    callback(history)
+                if early_stopping and early_stopping_callback(history):
+                    stop_early = True
+                    break
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt, stopping training and saving progress...")
 
@@ -1260,11 +1515,13 @@ class MuVIModel(PyroModule):
         n_subsamples: int,
         n_features: list[int],
         n_factors: int,
+        prior_scales: Optional[list[torch.Tensor]],
         n_covariates: int,
         likelihoods: list[str],
         global_prior_scale: float = 1.0,
         reg_hs: bool = True,
         nmf: Optional[list[bool]] = None,
+        pos_transform=None,
         scale_elbo: bool = True,
         device=None,
     ):
@@ -1280,6 +1537,9 @@ class MuVIModel(PyroModule):
             Number of features as list for each view
         n_factors : int
             Number of latent factors
+        prior_scales : list[torch.Tensor], optional
+            Local prior scales with prior information,
+            by default None (uninformed)
         n_covariates : int
             Number of covariates
         likelihoods : list[str], optional
@@ -1305,6 +1565,9 @@ class MuVIModel(PyroModule):
         self.feature_offsets = [0, *np.cumsum(self.n_features).tolist()]
         self.n_views = len(self.n_features)
         self.n_factors = n_factors
+        self.prior_scales = prior_scales
+        if self.prior_scales is not None:
+            self.prior_scales = torch.cat(self.prior_scales, 1).to(device)
         self.n_covariates = n_covariates
         self.likelihoods = likelihoods
         self.same_likelihood = len(set(self.likelihoods)) == 1
@@ -1316,7 +1579,11 @@ class MuVIModel(PyroModule):
             nmf = [False for _ in range(self.n_views)]
         self.nmf = nmf
         # only needed if nmf is True
-        self.pos_transform = torch.nn.ReLU()
+        self.pos_transform = None
+        if pos_transform == "softplus":
+            self.pos_transform = torch.nn.Softplus()
+        if pos_transform == "relu":
+            self.pos_transform = torch.nn.ReLU()
 
         self.scale_elbo = scale_elbo
         self.view_scales = np.ones(self.n_views)
@@ -1341,7 +1608,11 @@ class MuVIModel(PyroModule):
         """
         plate_kwargs = {
             "view": {"name": "view", "size": self.n_views, "dim": -1},
-            "factor_left": {"name": "factor_left", "size": self.n_factors, "dim": -2},
+            "factor_left": {
+                "name": "factor_left",
+                "size": self.n_factors,
+                "dim": -2,
+            },
             "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
@@ -1365,7 +1636,6 @@ class MuVIModel(PyroModule):
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: Optional[torch.Tensor] = None,
-        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Generate samples.
 
@@ -1377,9 +1647,6 @@ class MuVIModel(PyroModule):
             Binary mask of missing data
         covs : torch.Tensor, optional
             Additional covariate matrix, by default None
-        prior_scales : torch.Tensor, optional
-            Local prior scales with prior information,
-            by default None
 
         Returns
         -------
@@ -1429,10 +1696,10 @@ class MuVIModel(PyroModule):
                             ),
                         )
                         c = torch.sqrt(output_dict[f"caux_{m}"])
-                        if prior_scales is not None:
+                        if self.prior_scales is not None:
                             c = (
                                 c
-                                * prior_scales[
+                                * self.prior_scales[
                                     :,
                                     self.feature_offsets[m] : self.feature_offsets[
                                         m + 1
@@ -1462,10 +1729,14 @@ class MuVIModel(PyroModule):
                             f"beta_{m}",
                             dist.Normal(self._zeros((1,)), self._ones((1,))),
                         )
+                        if self.nmf[m]:
+                            output_dict[f"beta_{m}"] = self.pos_transform(
+                                output_dict[f"beta_{m}"]
+                            )
 
                 output_dict[f"sigma_{m}"] = pyro.sample(
                     f"sigma_{m}",
-                    dist.InverseGamma(self._ones((1,)), self._ones((1,))),
+                    dist.LogNormal(self._zeros((1,)), self._ones((1,))),
                 )
 
         with sample_plate:
@@ -1487,7 +1758,7 @@ class MuVIModel(PyroModule):
                     if self.likelihoods[m] == "normal":
                         y_dist = dist.Normal(
                             y_loc,
-                            torch.sqrt(output_dict[f"sigma_{m}"]),
+                            output_dict[f"sigma_{m}"],
                         )
                     else:
                         y_dist = dist.Bernoulli(logits=y_loc)
@@ -1698,7 +1969,6 @@ class MuVIGuide(PyroModule):
         obs: torch.Tensor,
         mask: torch.Tensor,
         covs: Optional[torch.Tensor] = None,
-        prior_scales: Optional[torch.Tensor] = None,
     ):
         """Approximate posterior."""
         output_dict = {}

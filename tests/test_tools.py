@@ -42,7 +42,7 @@ def test_save_load(data_gen):
     assert model._cache == loaded_model._cache
 
 
-def test_add_get_metadata():
+def test_add_metadata():
     model = muvi.load("test_save_load")
     metadata = pd.Series(range(model.n_samples), index=model.sample_names)
     muvi.tl.add_metadata(model, "test", metadata)
@@ -50,7 +50,7 @@ def test_add_get_metadata():
     assert (muvi.tl.get_metadata(model, "test") == metadata).all()
 
 
-def test_add_get_metadata_exist_error():
+def test_add_metadata_exist_error():
     model = muvi.load("test_save_load")
     metadata = pd.Series(range(model.n_samples), index=model.sample_names)
     muvi.tl.add_metadata(model, "test", metadata)
@@ -184,3 +184,13 @@ def test_to_mdata():
         np.testing.assert_equal(
             mdata[vn].varm["B"], model.get_covariate_coefficients(as_df=False)[vn].T
         )
+
+
+def test_posterior_feature_sets():
+    model = muvi.load("test_save_load")
+    posterior_feature_sets = muvi.tl.posterior_feature_sets(
+        model, r2_thresh=1.0, dir_path="posterior_feature_sets"
+    )
+    assert len(posterior_feature_sets) == model.n_views
+    for view_name in model.view_names:
+        assert view_name in posterior_feature_sets

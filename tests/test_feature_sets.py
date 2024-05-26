@@ -118,13 +118,11 @@ def test_filter():
         [feature_set_0, feature_set_1, feature_set_2], name="feature_sets"
     )
 
-    assert feature_sets.filter(list("ABCDEX"), 0.1, 1).feature_sets == set(
-        [
-            feature_set_0,
-            feature_set_1,
-            FeatureSet(features=list("X"), name="feature_set_2"),
-        ]
-    )
+    assert feature_sets.filter(list("ABCDEX"), 0.1, 1).feature_sets == set([
+        feature_set_0,
+        feature_set_1,
+        FeatureSet(features=list("X"), name="feature_set_2"),
+    ])
     assert feature_sets.filter(list("ABCDEX"), 0.5, 1).feature_sets == set(
         [feature_set_0, feature_set_1]
     )
@@ -211,18 +209,14 @@ def test_merge_similar():
         [feature_set_0, feature_set_1, feature_set_2], name="feature_sets"
     )
 
-    assert feature_sets.merge_similar(similarity_threshold=0.5) == FeatureSets(
-        [
-            FeatureSet(features=list("ABC"), name="feature_set_0"),
-            FeatureSet(features=list("CDEX"), name="feature_set_1|feature_set_2"),
-        ]
-    )
+    assert feature_sets.merge_similar(similarity_threshold=0.5) == FeatureSets([
+        FeatureSet(features=list("ABC"), name="feature_set_0"),
+        FeatureSet(features=list("CDEX"), name="feature_set_1|feature_set_2"),
+    ])
 
-    assert feature_sets.merge_similar(similarity_threshold=(1 - 4 / 5)) == FeatureSets(
-        [
-            FeatureSet(
-                features=list("ABCDEX"),
-                name="feature_set_0|feature_set_1|feature_set_2",
-            )
-        ]
-    )
+    assert feature_sets.merge_similar(similarity_threshold=(1 - 4 / 5)) == FeatureSets([
+        FeatureSet(
+            features=list("ABCDEX"),
+            name="feature_set_0|feature_set_1|feature_set_2",
+        )
+    ])

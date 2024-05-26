@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from muvi import MuVI
-from muvi.core.index import _normalize_index
+from muvi.core.index import _normalize_index, _make_index_unique
 
 
 def test_normalize_index_correct():
@@ -49,12 +49,19 @@ def test_normalize_index_incorrect():
         _normalize_index([False], index)
 
 
+def test_make_index_unique():
+    index = pd.Index([str(i) for i in range(10)] + ["0"])
+    deduped_index = _make_index_unique(index)
+    assert deduped_index[-1] == "0_1"
+
+
 def test_get_observations_view(data_gen):
     data_gen.generate()
     model = MuVI(
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
+        normalize=False,
         device="cpu",
     )
 
@@ -81,6 +88,7 @@ def test_get_observations_sample(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
+        normalize=False,
         device="cpu",
     )
 
@@ -97,6 +105,7 @@ def test_get_observations_feature(data_gen):
         data_gen.ys,
         data_gen.w_masks,
         data_gen.x,
+        normalize=False,
         device="cpu",
     )
 

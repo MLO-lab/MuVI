@@ -1,3 +1,4 @@
+import io
 import logging
 
 from pathlib import Path
@@ -12,14 +13,17 @@ import pandas as pd
 import pyro
 import scanpy as sc
 import scipy
+import torch
 
+from kneed import KneeLocator
 from scipy.optimize import linprog
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from statsmodels.stats import multitest
 from tqdm import tqdm
 
 from muvi.core.index import _normalize_index
 from muvi.core.models import MuVI
+from muvi.tools import feature_sets as fs
 from muvi.tools.cache import Cache
 
 
@@ -118,8 +122,7 @@ def filter_factors(model, r2_thresh: Union[int, float] = 0.95):
     if r2_thresh < 1.0:
         r2_thresh = (r2_sorted.cumsum() / r2_sorted.sum() < r2_thresh).sum() + 1
 
-    if r2_thresh > 1.0:
-        factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
+    factor_subset = r2_sorted.iloc[: int(r2_thresh)].index
 
     factor_subset = factor_subset.tolist()
     logger.info(f"Filtering down to {len(factor_subset)} factors.")
@@ -293,7 +296,7 @@ def rmse(
     """
 
     def _rmse(y_true, y_pred):
-        return mean_squared_error(y_true, y_pred, squared=False)
+        return root_mean_squared_error(y_true, y_pred)
 
     return _recon_error(
         model,
@@ -657,22 +660,117 @@ def dendrogram(model, groupby, **kwargs):
     return sc.tl.dendrogram(model_cache.factor_adata, groupby, **kwargs)
 
 
+def posterior_feature_sets(
+    model,
+    view_idx: Index = "all",
+    factor_idx: Index = "all",
+    r2_thresh: Union[int, float] = 0.95,
+    knee_sensitivity: float = 1.0,
+    dir_path=None,
+    **kwargs,
+):
+    model_cache = setup_cache(model)
+
+    r2_cols = [f"{Cache.METRIC_R2}_{vn}" for vn in model.view_names]
+    r2_df = model_cache.factor_metadata[r2_cols]
+
+    if r2_df.isna().all(None):
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            "Run `muvi.tl.variance_explained` to compute "
+            "the variance explained by each factor first. "
+            "Extracting the posterior feature sets across all factors."
+        )
+        r2_thresh = model.n_factors
+
+    if int(r2_thresh) == 1:
+        logger.warning(
+            "Unable to filter factors based on variance explained.\n"
+            f"`r2_thresh` of `{r2_thresh}` is ambiguous, `r2_thresh` must be "
+            "less than 1.0 or an integer greater than 1. "
+            "Extracting the posterior feature sets across all factors."
+        )
+        r2_thresh = model.n_factors
+
+    ws = model.get_factor_loadings(view_idx, factor_idx, as_df=True)
+
+    posterior_feature_sets = {}
+
+    for view_name, view_loadings in ws.items():
+        _r2_thresh = r2_thresh
+        view_feature_sets = {}
+        r2_sorted = r2_df[f"{Cache.METRIC_R2}_{view_name}"].sort_values(ascending=False)
+        factor_subset = r2_sorted.index
+        if _r2_thresh < 1.0:
+            _r2_thresh = (r2_sorted.cumsum() / r2_sorted.sum() < _r2_thresh).sum() + 1
+
+        factor_subset = r2_sorted.iloc[: int(_r2_thresh)].index
+
+        factor_subset = factor_subset.tolist()
+        if len(factor_subset) < model.n_factors:
+            logger.info(
+                "Extracting the posterior feature sets from "
+                f"{len(factor_subset)}/{model.n_factors} "
+                f"factors for view {view_name}."
+            )
+        for factor_name in factor_subset:
+            loadings = (
+                view_loadings.loc[factor_name, :].abs().sort_values(ascending=False)
+            )
+            kn = KneeLocator(
+                range(len(loadings)),
+                loadings,
+                S=knee_sensitivity,
+                curve="convex",
+                direction="decreasing",
+                **kwargs,
+            )
+            view_feature_sets[factor_name] = loadings.iloc[: kn.knee].index.tolist()
+        posterior_feature_sets[view_name] = view_feature_sets
+
+    if dir_path is not None:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+        pfs_df = pd.DataFrame(posterior_feature_sets)
+        pfs_df["name"] = pfs_df.index.astype(str)
+        for view_name in ws:
+            feature_sets = fs.from_dataframe(
+                pfs_df.loc[~pfs_df[view_name].isna()],
+                name=f"muvi_posterior_{view_name}",
+                features_col=view_name,
+            )
+            feature_sets.to_gmt(Path(dir_path) / f"muvi_posterior_{view_name}.gmt")
+
+    return posterior_feature_sets
+
+
 def from_adata(
     adata,
+    obs_key: Optional[str] = None,
     prior_mask_key: Optional[str] = None,
     covariate_key: Optional[str] = None,
     **kwargs,
 ):
-    observations = [adata.to_df().copy()]
+    if obs_key is None:
+        observations = [adata.to_df().copy()]
+    else:
+        if obs_key not in adata.obsm:
+            raise ValueError(f"Invalid `obs_key`, `{obs_key}` not found in `obsm`.")
+        observations = [adata.obsm[obs_key].copy()]
     prior_masks = None
     if prior_mask_key is not None:
-        if prior_mask_key in adata.varm:
-            prior_masks = [adata.varm[prior_mask_key].T.copy()]
+        if prior_mask_key not in adata.varm:
+            logger.warning(
+                f"Invalid `prior_mask_key`, `{prior_mask_key}` not found in `varm`."
+            )
         else:
-            logger.warning("No prior information found.")
+            prior_masks = [adata.varm[prior_mask_key].T.copy()]
 
     covariates = None
     if covariate_key is not None:
+        if covariate_key not in adata.obsm:
+            raise ValueError(
+                f"Invalid `covariate_key`, `{covariate_key}` not found in `obsm`."
+            )
         covariates = adata.obsm[covariate_key].copy()
 
     return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
@@ -680,29 +778,43 @@ def from_adata(
 
 def from_mdata(
     mdata,
+    obs_key: Optional[str] = None,
     prior_mask_key: Optional[str] = None,
     covariate_key: Optional[str] = None,
     **kwargs,
 ):
     view_names = sorted(mdata.mod.keys())
-    observations = {
-        view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
-    }
+
+    observations = {}
     prior_masks = {}
-    if prior_mask_key is not None:
-        for view_name in view_names:
-            if prior_mask_key in mdata.mod[view_name].varm:
+
+    for view_name in view_names:
+        if obs_key is None:
+            observations[view_name] = mdata.mod[view_name].to_df().copy()
+        else:
+            if obs_key not in mdata.mod[view_name].obsm:
+                raise ValueError(f"Invalid `obs_key`, `{obs_key}` not found in `obsm`.")
+            observations[view_name] = mdata.mod[view_name].obsm[obs_key].copy()
+
+        if prior_mask_key is not None:
+            if prior_mask_key not in mdata.mod[view_name].varm:
+                logger.warning(
+                    f"Invalid `prior_mask_key`, `{prior_mask_key}` not found in `varm`."
+                )
+            else:
                 prior_masks[view_name] = (
                     mdata.mod[view_name].varm[prior_mask_key].T.copy()
                 )
-            else:
-                logger.warning(f"No prior information found for `{view_name}`.")
 
     if len(prior_masks) == 0:
         prior_masks = None
 
     covariates = None
     if covariate_key is not None:
+        if covariate_key not in mdata.obsm:
+            raise ValueError(
+                f"Invalid `covariate_key`, `{covariate_key}` not found in `obsm`."
+            )
         covariates = mdata.obsm[covariate_key].copy()
 
     return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
@@ -747,6 +859,14 @@ def to_mdata(
         mdata.obsm[covariates_key] = model.get_covariates(as_df=True)
 
     return mdata
+
+
+class CPUUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+        else:
+            return super().find_class(module, name)
 
 
 def save(model, dir_path="."):
@@ -801,14 +921,14 @@ def save(model, dir_path="."):
     return dir_path
 
 
-def load(dir_path=".", with_params=True):
+def load(dir_path=".", with_params=True, map_location=None):
     model_path = Path(dir_path) / "model.pkl"
     params_path = Path(dir_path) / "params.save"
     factor_adata_path = Path(dir_path) / "factor.h5ad"
     cov_adata_path = Path(dir_path) / "cov.h5ad"
 
     with open(model_path, "rb") as f:
-        model = pickle.load(f)
+        model = pickle.load(f) if map_location is None else CPUUnpickler(f).load()
 
     if model._cache is not None:
         factor_adata = None
@@ -822,7 +942,7 @@ def load(dir_path=".", with_params=True):
         model._cache.factor_adata = factor_adata
         model._cache.cov_adata = cov_adata
     if with_params:
-        pyro.get_param_store().load(params_path)
+        pyro.get_param_store().load(params_path, map_location=map_location)
     # model = pyro.module("MuVI", model, update_module_params=True)  # noqa: ERA001
     return model
 

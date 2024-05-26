@@ -10,7 +10,6 @@ from muvi import MuVI
 
 
 def test_from_adata(pandas_input):
-
     view_idx = 0
     view_name = pandas_input["view_names"][view_idx]
     obs = pandas_input["observations"][view_idx]
@@ -70,7 +69,6 @@ def test_from_adata(pandas_input):
 
 
 def test_from_mdata(pandas_input):
-
     n_factors = pandas_input["masks"][0].shape[0]
 
     adata_dict = {}

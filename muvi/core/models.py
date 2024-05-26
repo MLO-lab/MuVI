@@ -515,20 +515,87 @@ class MuVI(PyroModule):
             view_mask = masks[vn]
             if view_mask.shape[0] != n_prior_factors:
                 raise ValueError(
-                    f"Mask `{vn}` has {view_mask.shape[0]} factors "
+                    f"Mask of `{vn}` has {view_mask.shape[0]} factors "
                     f"instead of {n_prior_factors}, "
                     "all masks must have the same number of factors."
                 )
-            if view_mask.shape[1] != self.n_features[vn]:
-                raise ValueError(
-                    f"Mask `{vn}` has {view_mask.shape[1]} features "
-                    f"instead of {self.n_features[vn]}, "
-                    "each mask must match the number of features of its view."
-                )
+
+            n_features_view = self.n_features[vn]
+
+            if isinstance(view_mask, np.ndarray):
+                logger.info("np.ndarray detected.")
+                n_features_mask = view_mask.shape[1]
+                if n_features_mask != n_features_view:
+                    logger.warning(
+                        f"Mask `{vn}` has {n_features_mask} features "
+                        f"instead of {n_features_view}, "
+                        "matching mask features to the view."
+                    )
+
+                    if n_features_mask > n_features_view:
+                        # clip to the number of view features
+                        logger.info(
+                            "Mask has more features than expected, "
+                            f"keeping only the first {n_features_view} features."
+                        )
+                        view_mask = np.copy(view_mask[:, :n_features_view])
+                    else:
+                        # pad with False to match the number of view features
+                        logger.info(
+                            "Mask has fewer features than expected, "
+                            "padding the remaining features with False."
+                        )
+                        view_mask = np.concatenate(
+                            [
+                                view_mask,
+                                np.zeros(
+                                    (n_factors, n_features_view - n_features_mask)
+                                ),
+                            ],
+                            axis=1,
+                        )
 
             if isinstance(view_mask, pd.DataFrame):
                 logger.info("pd.DataFrame detected.")
 
+                feature_intersection = [
+                    fn for fn in self.feature_names[vn] if fn in view_mask.columns
+                ]
+                n_feature_intersection = len(feature_intersection)
+                if n_feature_intersection == 0:
+                    raise ValueError(
+                        f"None of the feature names for mask `{vn}` "
+                        "match the feature names of its corresponding view. "
+                        "Possible indication of passing np.array observations "
+                        "with pd.DataFrame prior masks."
+                    )
+                if n_feature_intersection < n_features_view:
+                    # pad with False to match the number of view features
+                    logger.info(
+                        "Mask has fewer features than expected, "
+                        "padding the remaining features with False."
+                    )
+                    missing_features = [
+                        fn
+                        for fn in self.feature_names[vn]
+                        if fn not in view_mask.columns
+                    ]
+                    view_mask = pd.concat(
+                        [
+                            view_mask,
+                            pd.DataFrame(
+                                False,
+                                index=view_mask.index,
+                                columns=missing_features,
+                            ),
+                        ],
+                        axis=1,
+                    )
+
+                    feature_intersection += missing_features
+
+                # otherwise simply subset features to the ones present
+                view_mask = view_mask.loc[:, feature_intersection].copy()
                 mask_factor_names = view_mask.index.copy()
                 if factor_names is None:
                     logger.info(
@@ -541,7 +608,7 @@ class MuVI(PyroModule):
                         f"do not match the factor names of mask `{informed_views[0]}`, "
                         f"sorting names according to mask `{informed_views[0]}`."
                     )
-                    masks[vn] = view_mask.loc[factor_names, :]
+                    view_mask = view_mask.loc[factor_names, :]
 
                 if any(self.feature_names[vn] != view_mask.columns):
                     logger.info(
@@ -549,7 +616,9 @@ class MuVI(PyroModule):
                         "do not match the feature names of its corresponding view, "
                         "sorting names according to the view features."
                     )
-                    masks[vn] = view_mask.loc[:, self.feature_names[vn]]
+                    view_mask = view_mask.loc[:, self.feature_names[vn]]
+
+            masks[vn] = view_mask
 
         if factor_names is None:
             factor_names = [f"factor_{k}" for k in range(n_prior_factors)]
@@ -617,6 +686,49 @@ class MuVI(PyroModule):
         n_covariates = 0
         if covariates is not None:
             n_covariates = covariates.shape[1]
+
+        if isinstance(covariates, np.ndarray):
+            logger.info("np.ndarray detected.")
+            n_samples_cov = covariates.shape[0]
+            if n_samples_cov != self.n_samples:
+                logger.warning(
+                    f"Covariates have {n_samples_cov} samples "
+                    f"instead of {self.n_samples}, matching samples."
+                )
+
+                if n_samples_cov > self.n_samples:
+                    logger.info(
+                        "Covariates have more samples than expected, "
+                        f"keeping only the first {n_samples_cov} samples."
+                    )
+                    covariates = np.copy(covariates[: self.n_samples, :])
+                else:
+                    raise ValueError(
+                        "Covariates have fewer samples than expected, "
+                        "current version does not handle missing covariates"
+                    )
+
+        if isinstance(covariates, pd.DataFrame):
+            logger.info("pd.DataFrame detected.")
+
+            sample_intersection = [
+                sn for sn in self.sample_names if sn in covariates.index
+            ]
+            n_sample_intersection = len(sample_intersection)
+            if n_sample_intersection == 0:
+                raise ValueError(
+                    "None of the sample names for the covariates "
+                    "match the sample names of the observations. "
+                    "Possible indication of passing np.array observations "
+                    "with pd.DataFrame covariates."
+                )
+            if n_sample_intersection < self.n_samples:
+                raise ValueError(
+                    "Covariates have fewer samples than expected, "
+                    "current version does not handle missing covariates"
+                )
+
+            covariates = covariates.loc[sample_intersection, :].copy()
 
         covariate_names = None
         if isinstance(covariates, pd.DataFrame):

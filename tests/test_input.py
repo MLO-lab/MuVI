@@ -72,9 +72,7 @@ def test_pandas_input_shuffled_samples(pandas_input):
 
 
 def test_pandas_input_missing_cov_samples(pandas_input):
-    with pytest.raises(
-        ValueError, match="does not match the number of samples for the covariates"
-    ):
+    with pytest.raises(ValueError, match="Covariates have fewer samples than expected"):
         MuVI(
             pandas_input["observations"],
             covariates=pandas_input["covariates"].iloc[:-1, :],
@@ -83,12 +81,27 @@ def test_pandas_input_missing_cov_samples(pandas_input):
         )
 
 
-def test_pandas_input_missing_mask_features(pandas_input):
-    with pytest.raises(
-        ValueError, match="each mask must match the number of features of its view."
-    ):
-        bad_masks = pandas_input["masks"]
-        bad_masks[0] = bad_masks[0].iloc[:, :-1]
+def test_pandas_input_missing_some_mask_features(pandas_input):
+    bad_masks = pandas_input["masks"]
+    bad_masks[0] = bad_masks[0].iloc[:, :-1]
+    model = MuVI(
+        pandas_input["observations"],
+        bad_masks,
+        pandas_input["covariates"],
+        device="cpu",
+    )
+
+    assert (
+        model.feature_names["view_0"]
+        == model.get_prior_masks(as_df=True)["view_0"].columns
+    ).all()
+
+
+def test_pandas_input_missing_all_mask_features(pandas_input):
+    bad_masks = pandas_input["masks"]
+    bad_masks[0].columns = bad_masks[0].columns.astype(str) + "_suffix"
+
+    with pytest.raises(ValueError, match="None of the feature names for mask"):
         MuVI(
             pandas_input["observations"],
             bad_masks,

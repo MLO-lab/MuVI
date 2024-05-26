@@ -18,8 +18,8 @@ def test_early_stopping_callback(data_gen):
         optimizer="clipped",
         verbose=0,
         seed=0,
-        min_epochs=1, 
-        tolerance=100, 
+        min_epochs=1,
+        tolerance=100,
         patience=1,
     )
 

@@ -184,3 +184,13 @@ def test_to_mdata():
         np.testing.assert_equal(
             mdata[vn].varm["B"], model.get_covariate_coefficients(as_df=False)[vn].T
         )
+
+
+def test_posterior_feature_sets():
+    model = muvi.load("test_save_load")
+    posterior_feature_sets = muvi.tl.posterior_feature_sets(
+        model, r2_thresh=1.0, dir_path="posterior_feature_sets"
+    )
+    assert len(posterior_feature_sets) == model.n_views
+    for view_name in model.view_names:
+        assert view_name in posterior_feature_sets

@@ -745,20 +745,32 @@ def posterior_feature_sets(
 
 def from_adata(
     adata,
+    obs_key: Optional[str] = None,
     prior_mask_key: Optional[str] = None,
     covariate_key: Optional[str] = None,
     **kwargs,
 ):
-    observations = [adata.to_df().copy()]
+    if obs_key is None:
+        observations = [adata.to_df().copy()]
+    else:
+        if obs_key not in adata.obsm:
+            raise ValueError(f"Invalid `obs_key`, `{obs_key}` not found in `obsm`.")
+        observations = [adata.obsm[obs_key].copy()]
     prior_masks = None
     if prior_mask_key is not None:
-        if prior_mask_key in adata.varm:
-            prior_masks = [adata.varm[prior_mask_key].T.copy()]
+        if prior_mask_key not in adata.varm:
+            logger.warning(
+                f"Invalid `prior_mask_key`, `{prior_mask_key}` not found in `varm`."
+            )
         else:
-            logger.warning("No prior information found.")
+            prior_masks = [adata.varm[prior_mask_key].T.copy()]
 
     covariates = None
     if covariate_key is not None:
+        if covariate_key not in adata.obsm:
+            raise ValueError(
+                f"Invalid `covariate_key`, `{covariate_key}` not found in `obsm`."
+            )
         covariates = adata.obsm[covariate_key].copy()
 
     return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)
@@ -766,29 +778,43 @@ def from_adata(
 
 def from_mdata(
     mdata,
+    obs_key: Optional[str] = None,
     prior_mask_key: Optional[str] = None,
     covariate_key: Optional[str] = None,
     **kwargs,
 ):
     view_names = sorted(mdata.mod.keys())
-    observations = {
-        view_name: mdata.mod[view_name].to_df().copy() for view_name in view_names
-    }
+
+    observations = {}
     prior_masks = {}
-    if prior_mask_key is not None:
-        for view_name in view_names:
-            if prior_mask_key in mdata.mod[view_name].varm:
+
+    for view_name in view_names:
+        if obs_key is None:
+            observations[view_name] = mdata.mod[view_name].to_df().copy()
+        else:
+            if obs_key not in mdata.mod[view_name].obsm:
+                raise ValueError(f"Invalid `obs_key`, `{obs_key}` not found in `obsm`.")
+            observations[view_name] = mdata.mod[view_name].obsm[obs_key].copy()
+
+        if prior_mask_key is not None:
+            if prior_mask_key not in mdata.mod[view_name].varm:
+                logger.warning(
+                    f"Invalid `prior_mask_key`, `{prior_mask_key}` not found in `varm`."
+                )
+            else:
                 prior_masks[view_name] = (
                     mdata.mod[view_name].varm[prior_mask_key].T.copy()
                 )
-            else:
-                logger.warning(f"No prior information found for `{view_name}`.")
 
     if len(prior_masks) == 0:
         prior_masks = None
 
     covariates = None
     if covariate_key is not None:
+        if covariate_key not in mdata.obsm:
+            raise ValueError(
+                f"Invalid `covariate_key`, `{covariate_key}` not found in `obsm`."
+            )
         covariates = mdata.obsm[covariate_key].copy()
 
     return MuVI(observations, prior_masks=prior_masks, covariates=covariates, **kwargs)

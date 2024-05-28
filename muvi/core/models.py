@@ -220,6 +220,12 @@ class MuVI(PyroModule):
     def _normalize_observations(self):
         logger.info("Normalizing observations.")
         for vn, obs in self.observations.items():
+            if self.likelihoods[vn] == "bernoulli":
+                logger.info(
+                    f"Skipping normalization for view `{vn}` with a Bernoulli"
+                    " likelihood."
+                )
+                continue
             if self.nmf[vn]:
                 logger.info(f"Setting min value of view `{vn}` to 0.")
                 obs -= np.nanmin(obs, axis=0)
@@ -666,7 +672,9 @@ class MuVI(PyroModule):
         if likelihoods is None:
             likelihoods = ["normal" for _ in range(self.n_views)]
         if isinstance(likelihoods, list):
-            likelihoods = {self.view_names[m]: ll for m, ll in enumerate(likelihoods)}
+            likelihoods = {
+                self.view_names[m]: ll.lower() for m, ll in enumerate(likelihoods)
+            }
         likelihoods = {vn: likelihoods.get(vn, "normal") for vn in self.view_names}
         logger.info(f"Likelihoods set to `{likelihoods}`.")
         return likelihoods

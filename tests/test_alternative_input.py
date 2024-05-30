@@ -16,8 +16,6 @@ def test_from_adata(pandas_input):
     mask = pandas_input["masks"][view_idx]
     cov = pandas_input["covariates"]
 
-    n_factors = mask.shape[0]
-
     adata = ad.AnnData(obs)
     adata.obsm["X_np"] = obs.iloc[:, : (obs.shape[1] // 2)].values
     adata.obsm["X_pd"] = obs.iloc[:, : (obs.shape[1] // 2)]
@@ -41,9 +39,11 @@ def test_from_adata(pandas_input):
                 if obs_key_val == "":
                     obs_key_val = None
 
+                n_factors = 0
                 prior_mask_key_val = prior_mask_key
                 if prior_mask_key_val == "":
                     prior_mask_key_val = None
+                    n_factors = mask.shape[0]
 
                 covariate_key_val = covariate_key
                 if covariate_key_val == "":
@@ -69,8 +69,6 @@ def test_from_adata(pandas_input):
 
 
 def test_from_mdata(pandas_input):
-    n_factors = pandas_input["masks"][0].shape[0]
-
     adata_dict = {}
 
     for view_idx, view_obs in enumerate(pandas_input["observations"]):
@@ -101,9 +99,11 @@ def test_from_mdata(pandas_input):
                 if obs_key_val == "":
                     obs_key_val = None
 
+                n_factors = 0
                 prior_mask_key_val = prior_mask_key
                 if prior_mask_key_val == "":
                     prior_mask_key_val = None
+                    n_factors = pandas_input["masks"][0].shape[0]
 
                 covariate_key_val = covariate_key
                 if covariate_key_val == "":

@@ -631,7 +631,7 @@ def test(
     p_adj_method: str = "fdr_bh",
     min_size: int = 10,
     cache: bool = True,
-    rename: bool = True,
+    rename: bool = False,
 ):
     """Perform significance test of factor loadings against feature sets.
 
@@ -656,7 +656,7 @@ def test(
     cache : bool, optional
         Whether to store results in the model cache, by default True
     rename : bool, optional
-        Whether to rename overwritten factors (FDR > 0.05), by default True
+        Whether to rename overwritten factors (FDR > 0.05), by default False
 
     Returns
     -------

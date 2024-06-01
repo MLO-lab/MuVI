@@ -93,6 +93,14 @@ class Cache:
         if self.cov_adata is not None:
             self.cov_adata.varm[Cache.META_KEY].update(scores.astype(np.float32))
 
+    def reorder_factors(self, order):
+        if self.factor_adata is not None:
+            self.factor_adata = self.factor_adata[:, order].copy()
+
+    def rename_factors(self, factor_names):
+        if self.factor_adata is not None:
+            self.factor_adata.var_names = factor_names
+
     def filter_factors(self, factor_idx):
         self.factor_adata.obsm[Cache.FILTERED_KEY] = (
             self.factor_adata.to_df().loc[:, factor_idx].copy()

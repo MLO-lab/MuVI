@@ -103,7 +103,7 @@ def test_test():
     view_idx = "view_0"
     informed_factors = model.prior_masks[view_idx].any(axis=1)
 
-    result = muvi.tl.test(model, min_size=1)
+    result = muvi.tl._test_single_view(model, min_size=1)
 
     assert "t" in result and "p" in result and "p_adj" in result
     assert (model.factor_names[informed_factors] == result["t"].columns).all()

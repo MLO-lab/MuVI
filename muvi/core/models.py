@@ -126,14 +126,18 @@ class MuVI(PyroModule):
         self.device = self._setup_device(device)
         self.to(self.device)
 
+        self._old_factor_names = self._factor_names.copy()
+
         self._model = None
         self._guide = None
         self._built = False
         self._trained = False
         self._training_log: dict[str, Any] = {}
-        self._cache = None
 
         self._version = version("muvi")
+
+        self._reset_cache()
+        self._reset_factors()
 
     def __repr__(self):
         table = [
@@ -171,8 +175,48 @@ class MuVI(PyroModule):
         output = header + body + "\n" + empty_line
         return output
 
-    def _get_factor_signs(self):
-        signs = np.ones(self.n_factors, dtype=np.float32)
+    @property
+    def factor_order(self):
+        return self._factor_order
+
+    @factor_order.setter
+    def factor_order(self, value):
+        self._factor_order = self._factor_order[np.array(value)]
+        if self._cache is not None:
+            self._cache.reorder_factors(self._factor_order)
+
+    @property
+    def factor_names(self):
+        return self._factor_names[self.factor_order]
+
+    @factor_names.setter
+    def factor_names(self, value):
+        self._factor_names = _make_index_unique(pd.Index(value))
+        if self._cache is not None:
+            self._cache.rename_factors(self._factor_names)
+
+    @property
+    def factor_signs(self):
+        return self._factor_signs[self.factor_order]
+
+    @factor_signs.setter
+    def factor_signs(self, value):
+        self._factor_signs = value
+
+    def _reset_cache(self):
+        self._cache = None
+
+    def _reset_factors(self):
+        self._factor_order = np.arange(self.n_factors)
+        self._factor_names = self._old_factor_names.copy()
+        self._factor_signs = np.ones(self.n_factors, dtype=np.float32)
+
+    def _compute_factor_signs(self):
+        self.factor_signs = np.ones(self.n_factors, dtype=np.float32)
+
+        # if nmf is enabled, all factors are positive
+        if any(self.nmf.values()):
+            return self.factor_signs
         # only compute signs if model is trained
         # and there is no nmf constraint
         if self._trained:
@@ -182,12 +226,9 @@ class MuVI(PyroModule):
             w = np.array(
                 list(map(lambda x, y: y[x], np.argsort(-np.abs(w), axis=1)[:, :100], w))
             )
-            signs = (w.sum(axis=1) > 0) * 2 - 1
+            self.factor_signs = (w.sum(axis=1) > 0) * 2 - 1
 
-        # if nmf is enabled, all factors are positive
-        if any(self.nmf.values()):
-            signs = np.ones(self.n_factors, dtype=np.float32)
-        return pd.Series(signs, index=self.factor_names, dtype=np.float32)
+        return self.factor_signs
 
     def _setup_device(self, device):
         cuda_available = torch.cuda.is_available()
@@ -472,7 +513,7 @@ class MuVI(PyroModule):
             self.n_factors = n_factors
             self.n_dense_factors = n_factors
             # TODO: duplicate line...see below
-            self.factor_names = pd.Index([f"factor_{k}" for k in range(n_factors)])
+            self._factor_names = pd.Index([f"factor_{k}" for k in range(n_factors)])
             return None, None
 
         # if list convert to dict
@@ -481,7 +522,10 @@ class MuVI(PyroModule):
 
         masks = self._merge(masks)
 
-        informed_views = [vn for vn in self.view_names if vn in masks]
+        informed_views = []
+        for vn in self.view_names:
+            if vn in masks and np.any(masks[vn]):
+                informed_views.append(vn)
 
         n_prior_factors = masks[informed_views[0]].shape[0]
 
@@ -620,7 +664,7 @@ class MuVI(PyroModule):
             factor_names = list(factor_names) + [
                 f"dense_{k}" for k in range(n_dense_factors)
             ]
-        self.factor_names = self._validate_index(pd.Index(factor_names))
+        self._factor_names = self._validate_index(pd.Index(factor_names))
 
         # keep only numpy arrays
         prior_masks = {
@@ -655,6 +699,7 @@ class MuVI(PyroModule):
 
         self.n_factors = n_factors
         self.n_dense_factors = n_dense_factors
+        self.informed_views = informed_views
         return prior_masks, prior_scales
 
     def _setup_likelihoods(self, likelihoods):
@@ -1087,7 +1132,7 @@ class MuVI(PyroModule):
         self._raise_untrained_error()
 
         ws = self._guide.get_w(as_list=True)
-        ws = [w * self._get_factor_signs().to_numpy()[:, np.newaxis] for w in ws]
+        ws = [w[self.factor_order, :] * self.factor_signs[:, np.newaxis] for w in ws]
         return self._get_view_attr(
             {vn: ws[m] for m, vn in enumerate(self.view_names)},
             view_idx,
@@ -1158,8 +1203,11 @@ class MuVI(PyroModule):
         """
         self._raise_untrained_error()
 
+        z = self._guide.get_z()
+        z = z[:, self.factor_order] * self.factor_signs
+
         return self._get_sample_attr(
-            self._guide.get_z() * self._get_factor_signs().to_numpy(),
+            z,
             sample_idx,
             other_idx=factor_idx,
             other_names=self.factor_names,
@@ -1463,6 +1511,7 @@ class MuVI(PyroModule):
         pyro.clear_param_store()
 
         logger.info("Starting training...")
+        # needs to be set here otherwise the logcallback fails
         self._trained = True
         stop_early = False
         history = []
@@ -1501,7 +1550,14 @@ class MuVI(PyroModule):
         }
         logger.info("Call `model._training_log` to inspect the training progress.")
         # reset cache in case it was initialized by any of the callbacks
-        self._cache = None
+        self._post_fit()
+
+    def _post_fit(self):
+        """Post fit method."""
+        self._trained = True
+        self._reset_cache()
+        self._reset_factors()
+        self._compute_factor_signs()
 
 
 class MuVIModel(PyroModule):

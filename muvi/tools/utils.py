@@ -139,9 +139,10 @@ def _recon_error(
     factor_wise,
     cov_wise,
     subsample,
-    cache,
     metric_label,
     metric_fn,
+    cache,
+    sort,
 ):
     if view_idx is None:
         raise ValueError("`view_idx` cannot be None.")
@@ -254,6 +255,12 @@ def _recon_error(
         model_cache.update_uns(view_scores_key, view_scores)
         model_cache.update_factor_metadata(factor_scores)
         model_cache.update_cov_metadata(cov_scores)
+        if sort and sort in ["ascending", "descending"]:
+            order = (
+                factor_scores.sum(1).sort_values(ascending=sort == "ascending").index
+            )
+            order = _normalize_index(order, model.factor_names, as_idx=True)
+            model.factor_order = order
     return view_scores, factor_scores, cov_scores
 
 
@@ -268,6 +275,7 @@ def rmse(
     cov_wise: bool = True,
     subsample: int = 0,
     cache: bool = True,
+    sort: bool = True,
 ):
     """Compute RMSE.
 
@@ -293,10 +301,15 @@ def rmse(
         Number of samples to estimate RMSE, by default 0 (all samples)
     cache : bool, optional
         Whether to store results in the model cache, by default True
+    sort : bool, optional
+        Whether to sort factors by RMSE, by default True
     """
 
     def _rmse(y_true, y_pred):
         return root_mean_squared_error(y_true, y_pred)
+
+    if sort:
+        sort = "ascending"
 
     return _recon_error(
         model,
@@ -308,9 +321,10 @@ def rmse(
         factor_wise,
         cov_wise,
         subsample,
-        cache,
         metric_label=Cache.METRIC_RMSE,
         metric_fn=_rmse,
+        cache=cache,
+        sort=sort,
     )
 
 
@@ -325,6 +339,7 @@ def variance_explained(
     cov_wise: bool = True,
     subsample: int = 0,
     cache: bool = True,
+    sort: bool = True,
 ):
     """Compute R2.
 
@@ -350,12 +365,17 @@ def variance_explained(
         Number of samples to estimate R2, by default 0 (all samples)
     cache : bool, optional
         Whether to store results in the model cache, by default True
+    sort : bool, optional
+        Whether to sort factors by R2, by default True
     """
 
     def _r2(y_true, y_pred):
         ss_res = np.nansum(np.square(y_true - y_pred))
         ss_tot = np.nansum(np.square(y_true))
         return 1.0 - (ss_res / ss_tot)
+
+    if sort:
+        sort = "descending"
 
     return _recon_error(
         model,
@@ -367,9 +387,10 @@ def variance_explained(
         factor_wise,
         cov_wise,
         subsample,
-        cache,
         metric_label=Cache.METRIC_R2,
         metric_fn=_r2,
+        cache=cache,
+        sort=sort,
     )
 
 
@@ -406,7 +427,7 @@ def variance_explained_grouped(model, groupby, factor_idx: Index = "all", **kwar
     return model._cache.uns[Cache.UNS_GROUPED_R2]
 
 
-def test(
+def _test_single_view(
     model,
     view_idx: Union[str, int] = 0,
     factor_idx: Index = "all",
@@ -473,7 +494,8 @@ def test(
 
     if use_prior_mask:
         logger.warning(
-            "No feature sets provided, extracting feature sets from prior mask."
+            f"No feature sets provided for `{view_idx}`, "
+            "extracting feature sets from the prior mask."
         )
         feature_sets = model.get_prior_masks(
             view_idx, factor_idx=factor_idx, as_df=True
@@ -531,9 +553,8 @@ def test(
 
     t_stat_dict = {}
     prob_dict = {}
-    i = 0
+
     for feature_set in tqdm(feature_sets.index.tolist()):
-        i += 1
         fs_features = feature_sets.loc[feature_set, :]
 
         features_in = factor_loadings.loc[:, fs_features]
@@ -598,6 +619,109 @@ def test(
             )
 
     return result
+
+
+def test(
+    model,
+    view_idx: Index = "all",
+    factor_idx: Index = "all",
+    feature_sets: pd.DataFrame = None,
+    sign: str = "all",
+    corr_adjust: bool = True,
+    p_adj_method: str = "fdr_bh",
+    min_size: int = 10,
+    cache: bool = True,
+    rename: bool = True,
+):
+    """Perform significance test of factor loadings against feature sets.
+
+    Parameters
+    ----------
+    model : MuVI
+        A MuVI model
+    view_idx : Index, optional
+        View index, by default "all"
+    factor_idx : Index, optional
+        Factor index, by default "all"
+    feature_sets : pd.DataFrame, optional
+        Boolean dataframe with feature sets in each row, by default None
+    sign : str, optional
+        Two sided ("all") or one-sided ("neg" or "pos"), by default "all"
+    corr_adjust : bool, optional
+        Whether to adjust for multiple testing, by default True
+    p_adj_method : str, optional
+        Adjustment method for multiple testing, by default "fdr_bh"
+    min_size : int, optional
+        Lower size limit for feature sets to be considered, by default 10
+    cache : bool, optional
+        Whether to store results in the model cache, by default True
+    rename : bool, optional
+        Whether to rename overwritten factors (FDR > 0.05), by default True
+
+    Returns
+    -------
+    dict
+        Dictionary of test results with "t", "p" and "p_adj" keys
+        and pd.DataFrame values with factor_idx as index,
+        and index of feature_sets as columns
+    """
+
+    view_indices = _normalize_index(view_idx, model.view_names, as_idx=False)
+    use_prior_mask = feature_sets is None
+    if use_prior_mask:
+        view_indices = [vi for vi in view_indices if vi in model.informed_views]
+
+    if len(view_indices) == 0:
+        if use_prior_mask:
+            raise ValueError(
+                "`feature_sets` is None, and none of the selected views are informed."
+            )
+        raise ValueError(f"No valid views found for `view_idx={view_idx}`.")
+
+    results = {}
+    for view_idx in view_indices:
+        try:
+            results[view_idx] = _test_single_view(
+                model,
+                view_idx=view_idx,
+                factor_idx=factor_idx,
+                feature_sets=feature_sets,
+                sign=sign,
+                corr_adjust=corr_adjust,
+                p_adj_method=p_adj_method,
+                min_size=min_size,
+                cache=cache,
+            )
+        except ValueError as e:
+            logger.warning(e)
+            results[view_idx] = {
+                Cache.TEST_T: pd.DataFrame(),
+                Cache.TEST_P: pd.DataFrame(),
+            }
+            if p_adj_method is not None:
+                results[view_idx][Cache.TEST_P_ADJ] = pd.DataFrame()
+            continue
+
+    if cache and rename:
+        dfs = []
+        for view_name, view_results in results.items():
+            p_adj = view_results[Cache.TEST_P_ADJ].copy()
+            dfs.append(
+                pd.DataFrame(np.diag(p_adj), index=[p_adj.index], columns=[view_name])
+            )
+        df = pd.concat(dfs, axis=1)
+
+        new_factor_names = []
+        overwritten_idx = 0
+        for k in model.factor_names:
+            if (df.loc[k, :] > 0.05).all(None):
+                new_factor_names.append(f"factor_{overwritten_idx}")
+                overwritten_idx += 1
+            else:
+                new_factor_names.append(k)
+
+        model.factor_names = new_factor_names
+    return results
 
 
 # scanpy

@@ -262,7 +262,7 @@ def variance_explained_grouped(
 
 def factors_overview(
     model,
-    view_idx=0,
+    view_idx="all",
     one_sided=True,
     alpha=0.1,
     sig_only=False,
@@ -278,77 +278,127 @@ def factors_overview(
     if isinstance(view_idx, int):
         view_idx = model.view_names[view_idx]
 
+    view_indices = _normalize_index(view_idx, model.view_names, as_idx=False)
+    n_views = len(view_indices)
+
     model_cache = _get_model_cache(model)
-    data = model_cache.factor_metadata.copy()
+
+    figsize = (8 * n_views, 8)
+    fig, axs = plt.subplots(1, n_views, figsize=figsize, squeeze=False, sharey=False)
+
+    factor_metadata = model_cache.factor_metadata.copy()
 
     name_col = "Factor"
-    data[name_col] = data.index.astype(str)
+    factor_metadata[name_col] = factor_metadata.index.astype(str)
 
     if prior_only:
-        data = data.loc[~data[name_col].str.contains("dense", case=False), :].copy()
+        factor_metadata = factor_metadata.loc[
+            ~factor_metadata[name_col].str.contains("dense", case=False), :
+        ].copy()
 
-    size_col = None
-    if model._informed:
-        size_col = "Size"
-        data[size_col] = model.get_prior_masks(view_idx, as_df=True)[view_idx].sum(1)
-        data.loc[data[name_col].str.contains("dense", case=False), size_col] = 0
+    for m, view_idx in enumerate(view_indices):
+        factor_metadata_view = factor_metadata.copy()
+        size_col = None
+        if model._informed:
+            size_col = "Size"
+            factor_metadata_view[size_col] = model.get_prior_masks(
+                view_idx, as_df=True
+            )[view_idx].sum(1)
+            factor_metadata_view.loc[
+                factor_metadata_view[name_col].str.contains("dense", case=False),
+                size_col,
+            ] = 0
 
-    sign_dict = {model_cache.TEST_ALL: " (*)"}
-    if one_sided:
-        sign_dict = {model_cache.TEST_NEG: " (-)", model_cache.TEST_POS: " (+)"}
-    joint_p_col = "p_min"
-    direction_col = "direction"
+        sign_dict = {model_cache.TEST_ALL: " (*)"}
+        if one_sided:
+            sign_dict = {model_cache.TEST_NEG: " (-)", model_cache.TEST_POS: " (+)"}
+        joint_p_col = "p_min"
+        direction_col = "direction"
 
-    p_col = "p"
-    if adjusted:
-        p_col = "p_adj"
+        p_col = model_cache.TEST_P
+        if adjusted:
+            p_col = model_cache.TEST_P_ADJ
 
-    p_df = data[[f"{p_col}_{sign}_{view_idx}" for sign in sign_dict]]
-    if p_df.isna().all(None) and sig_only:
-        raise ValueError("No test results found in model cache, rerun `muvi.tl.test`.")
+        p_df = factor_metadata_view[
+            [f"{p_col}_{sign}_{view_idx}" for sign in sign_dict]
+        ]
+        if p_df.isna().all(None) and sig_only:
+            raise ValueError(
+                "No test results found in model cache, rerun `muvi.tl.test`."
+            )
 
-    p_df = p_df.fillna(1.0)
-    data[joint_p_col] = p_df.min(axis=1).clip(1e-10, 1.0)
-    data[direction_col] = p_df.idxmin(axis=1).str[len(p_col) + 1 : len(p_col) + 4]
+        p_df = p_df.fillna(1.0)
+        factor_metadata_view[joint_p_col] = p_df.min(axis=1).clip(1e-10, 1.0)
+        factor_metadata_view[direction_col] = p_df.idxmin(axis=1).str[
+            len(p_col) + 1 : len(p_col) + 4
+        ]
 
-    if alpha is None:
-        alpha = 1.0
-    if alpha <= 0:
-        logger.warning("Negative or zero `alpha`, setting `alpha` to 0.01.")
-        alpha = 0.01
-    if alpha > 1.0:
-        logger.warning("`alpha` larger than 1.0, setting `alpha` to 1.0.")
-        alpha = 1.0
-    data.loc[data[joint_p_col] > alpha, direction_col] = ""
-    if sig_only:
-        data = data.loc[data[direction_col] != "", :]
+        if alpha is None:
+            alpha = 1.0
+        if alpha <= 0:
+            logger.warning("Negative or zero `alpha`, setting `alpha` to 0.01.")
+            alpha = 0.01
+        if alpha > 1.0:
+            logger.warning("`alpha` larger than 1.0, setting `alpha` to 1.0.")
+            alpha = 1.0
+        factor_metadata_view.loc[
+            factor_metadata_view[joint_p_col] > alpha, direction_col
+        ] = ""
+        if sig_only:
+            factor_metadata_view = factor_metadata_view.loc[
+                factor_metadata_view[direction_col] != "", :
+            ]
 
-    data[name_col] = data[name_col] + data[direction_col].map(sign_dict).fillna("")
+        factor_metadata_view[name_col] = factor_metadata_view[
+            name_col
+        ] + factor_metadata_view[direction_col].map(sign_dict).fillna("")
 
-    neg_log_col = r"$-\log_{10}(FDR)$"
-    data[neg_log_col] = -np.log10(data[joint_p_col])
-    r2_col = f"r2_{view_idx}"
-    if top > 0:
-        data = data.sort_values(r2_col, ascending=True)
+        neg_log_col = r"$-\log_{10}(FDR)$"
+        factor_metadata_view[neg_log_col] = -np.log10(factor_metadata_view[joint_p_col])
 
-    g = sns.scatterplot(
-        data=data.iloc[-top:],
-        x=r2_col,
-        y=name_col,
-        hue=neg_log_col,
-        palette=kwargs.pop("palette", "flare"),
-        size=size_col,
-        sizes=kwargs.pop("sizes", (50, 350)),
-        **kwargs,
-    )
-    g.set_title(
-        rf"Overview top factors in {view_idx} $\alpha = {alpha}$"
-        # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"  # noqa: ERA001
-    )
-    g.set(xlabel=r"$R^2$")
+        r2_col = f"{model_cache.METRIC_R2}_{view_idx}"
+        if top > 0:
+            factor_metadata_view = factor_metadata_view.sort_values(
+                r2_col, ascending=True
+            )
+
+        g = sns.scatterplot(
+            ax=axs[0][m],
+            data=factor_metadata_view.iloc[-top:],
+            x=r2_col,
+            y=name_col,
+            hue=neg_log_col,
+            palette=kwargs.pop("palette", "flare"),
+            size=size_col,
+            sizes=kwargs.pop("sizes", (50, 350)),
+            **kwargs,
+        )
+        g.set_title(
+            rf"Overview top factors in {view_idx} $\alpha = {alpha}$"
+            # rf"($\alpha = {alpha:.{max(1, int(-np.log10(alpha)))}f}$)"  # noqa: ERA001
+        )
+        g.set(xlabel=r"$R^2$")
+
+        # Format the legend labels
+        new_labels = []
+        for text in g.legend_.get_texts():
+            if "size" in text.get_text().lower():
+                break
+            try:
+                new_label = float(text.get_text())
+                new_label = f"{new_label:.3f}"
+            except ValueError:
+                new_label = text.get_text()
+            new_labels.append(new_label)
+
+        # Set the new labels
+        for text, new_label in zip(g.legend_.get_texts(), new_labels):
+            text.set_text(new_label)
+
+    fig.tight_layout()
     savefig_or_show(f"overview_view_{view_idx}", show=show, save=save)
     if not show:
-        return g
+        return fig, axs
 
 
 def inspect_factor(

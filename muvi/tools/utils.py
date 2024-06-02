@@ -626,12 +626,12 @@ def test(
     view_idx: Index = "all",
     factor_idx: Index = "all",
     feature_sets: pd.DataFrame = None,
-    sign: str = "all",
+    sign: Optional[str] = None,
     corr_adjust: bool = True,
     p_adj_method: str = "fdr_bh",
     min_size: int = 10,
     cache: bool = True,
-    rename: bool = False,
+    rename: bool = True,
 ):
     """Perform significance test of factor loadings against feature sets.
 
@@ -646,7 +646,8 @@ def test(
     feature_sets : pd.DataFrame, optional
         Boolean dataframe with feature sets in each row, by default None
     sign : str, optional
-        Two sided ("all") or one-sided ("neg" or "pos"), by default "all"
+        Two sided ("all") or one-sided ("neg", "pos" or None for both directions),
+        by default None ("neg" and "pos")
     corr_adjust : bool, optional
         Whether to adjust for multiple testing, by default True
     p_adj_method : str, optional
@@ -656,7 +657,7 @@ def test(
     cache : bool, optional
         Whether to store results in the model cache, by default True
     rename : bool, optional
-        Whether to rename overwritten factors (FDR > 0.05), by default False
+        Whether to rename overwritten factors (FDR > 0.05), by default True
 
     Returns
     -------
@@ -678,37 +679,47 @@ def test(
             )
         raise ValueError(f"No valid views found for `view_idx={view_idx}`.")
 
+    signs = [sign]
+    if sign is None:
+        signs = ["neg", "pos"]
+
     results = {}
-    for view_idx in view_indices:
-        try:
-            results[view_idx] = _test_single_view(
-                model,
-                view_idx=view_idx,
-                factor_idx=factor_idx,
-                feature_sets=feature_sets,
-                sign=sign,
-                corr_adjust=corr_adjust,
-                p_adj_method=p_adj_method,
-                min_size=min_size,
-                cache=cache,
-            )
-        except ValueError as e:
-            logger.warning(e)
-            results[view_idx] = {
-                Cache.TEST_T: pd.DataFrame(),
-                Cache.TEST_P: pd.DataFrame(),
-            }
-            if p_adj_method is not None:
-                results[view_idx][Cache.TEST_P_ADJ] = pd.DataFrame()
-            continue
+
+    for sign in signs:
+        results[sign] = {}
+        for view_idx in view_indices:
+            try:
+                results[sign][view_idx] = _test_single_view(
+                    model,
+                    view_idx=view_idx,
+                    factor_idx=factor_idx,
+                    feature_sets=feature_sets,
+                    sign=sign,
+                    corr_adjust=corr_adjust,
+                    p_adj_method=p_adj_method,
+                    min_size=min_size,
+                    cache=cache,
+                )
+            except ValueError as e:
+                logger.warning(e)
+                results[sign][view_idx] = {
+                    Cache.TEST_T: pd.DataFrame(),
+                    Cache.TEST_P: pd.DataFrame(),
+                }
+                if p_adj_method is not None:
+                    results[sign][view_idx][Cache.TEST_P_ADJ] = pd.DataFrame()
+                continue
 
     if cache and rename:
         dfs = []
-        for view_name, view_results in results.items():
-            p_adj = view_results[Cache.TEST_P_ADJ].copy()
-            dfs.append(
-                pd.DataFrame(np.diag(p_adj), index=[p_adj.index], columns=[view_name])
-            )
+        for _, sign_results in results.items():
+            for view_name, view_results in sign_results.items():
+                p_adj = view_results[Cache.TEST_P_ADJ].copy()
+                dfs.append(
+                    pd.DataFrame(
+                        np.diag(p_adj), index=[p_adj.index], columns=[view_name]
+                    )
+                )
         df = pd.concat(dfs, axis=1)
 
         new_factor_names = []

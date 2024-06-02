@@ -1092,9 +1092,8 @@ class MuVI(PyroModule):
             Dictionary with view names as keys,
             and np.ndarray or pd.DataFrame as values.
         """
-
         return self._get_view_attr(
-            self.prior_masks,
+            {k: v[self.factor_order, :] for k, v in self.prior_masks.items()},
             view_idx,
             feature_idx,
             other_idx=factor_idx,

@@ -715,6 +715,7 @@ def test(
         for _, sign_results in results.items():
             for view_name, view_results in sign_results.items():
                 p_adj = view_results[Cache.TEST_P_ADJ].copy()
+                p_adj = p_adj.loc[p_adj.columns, p_adj.columns].copy()
                 dfs.append(
                     pd.DataFrame(
                         np.diag(p_adj), index=[p_adj.index], columns=[view_name]
@@ -725,6 +726,9 @@ def test(
         new_factor_names = []
         overwritten_idx = 0
         for k in model.factor_names:
+            if k not in df.index:
+                new_factor_names.append(k)
+                continue
             if (df.loc[k, :] > 0.05).all(None):
                 new_factor_names.append(f"factor_{overwritten_idx}")
                 overwritten_idx += 1

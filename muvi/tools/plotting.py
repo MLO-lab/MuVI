@@ -158,8 +158,13 @@ def variance_explained(
     """Heatmap of variance explained, see `muvi.tl.variance_explained`."""
 
     model_cache = _get_model_cache(model)
-    r2_fac = model_cache.factor_metadata
-    r2_cov = model_cache.cov_metadata
+    r2_fac = None
+    if model_cache.factor_metadata is not None:
+        r2_fac = model_cache.factor_metadata.copy()
+    r2_cov = None
+    if model_cache.cov_metadata is not None:
+        r2_cov = model_cache.cov_metadata.copy()
+
     if r2_fac is None and r2_cov is None:
         raise ValueError(
             "No scores found in model cache, rerun `muvi.tl.variance_explained`."

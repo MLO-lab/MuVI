@@ -415,8 +415,10 @@ def variance_explained_grouped(model, groupby, factor_idx: Index = "all", **kwar
                 model,
                 sample_idx=group_df.index,
                 factor_idx=factor_idx,
+                cache=False,
+                sort=False,
                 **kwargs,
-            )[1]
+            )[1].copy()
         )
         .reset_index()
     )

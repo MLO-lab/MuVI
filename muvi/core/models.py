@@ -259,7 +259,7 @@ class MuVI(PyroModule):
 
     def _normalize_observations(self):
         logger.info("Normalizing observations.")
-        for vn, obs in self.observations.items():
+        for vn in self.observations:
             if self.likelihoods[vn] == "bernoulli":
                 logger.info(
                     f"Skipping normalization for view `{vn}` with a Bernoulli"
@@ -268,15 +268,15 @@ class MuVI(PyroModule):
                 continue
             if self.nmf[vn]:
                 logger.info(f"Setting min value of view `{vn}` to 0.")
-                obs -= np.nanmin(obs, axis=0)
+                self.observations[vn] -= np.nanmin(self.observations[vn], axis=0)
             else:
                 logger.info(f"Centering features of view `{vn}`.")
-                obs -= np.nanmean(obs, axis=0)
-            global_std = np.nanstd(obs)
+                self.observations[vn] -= np.nanmean(self.observations[vn], axis=0)
+            global_std = np.nanstd(self.observations[vn])
             logger.info(
                 f"Setting global standard deviation to 1.0 (from {global_std:.3f})."
             )
-            obs /= global_std
+            self.observations[vn] /= global_std
 
         return self.observations
 

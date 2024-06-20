@@ -148,6 +148,33 @@ def lined_heatmap(data, figsize=None, hlines=None, vlines=None, **kwargs):
     return g
 
 
+def missingness_overview(
+    model,
+    show: Optional[bool] = None,
+    save: Union[bool, str, None] = None,
+    **kwargs,
+):
+    data = model.get_observations(as_df=True)
+
+    g = muvi.pl.lined_heatmap(
+        pd.DataFrame(
+            {
+                view_name: data[view_name].isna().mean(axis=1)
+                for view_name in model.view_names
+            }
+        )
+        .loc[model.sample_names, model.view_names]
+        .T,
+        vmin=0.0,
+        vmax=1.0,
+        cmap="gray",
+        **kwargs,
+    )
+    savefig_or_show("missingness_overview", show=show, save=save)
+    if not show:
+        return g
+
+
 def variance_explained(
     model,
     top=50,

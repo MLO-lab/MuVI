@@ -737,8 +737,17 @@ def test(
             else:
                 new_factor_names.append(k)
 
-        model.factor_names = new_factor_names
+        model.factor_names = pd.Index(new_factor_names)[
+            invert_permutation(model.factor_order)
+        ]
     return results
+
+
+def invert_permutation(p):
+    p = np.asanyarray(p)
+    s = np.empty_like(p)
+    s[p] = np.arange(p.size)
+    return s
 
 
 # scanpy

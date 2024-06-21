@@ -193,7 +193,7 @@ class MuVI(PyroModule):
     def factor_names(self, value):
         self._factor_names = _make_index_unique(pd.Index(value))
         if self._cache is not None:
-            self._cache.rename_factors(self._factor_names)
+            self._cache.rename_factors(self.factor_names)
 
     @property
     def factor_signs(self):

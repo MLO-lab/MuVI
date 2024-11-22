@@ -280,7 +280,7 @@ class MuVI(PyroModule):
 
         return self.observations
 
-    def _merge(self, matrix_collection, method="union"):
+    def _merge(self, matrix_collection, method="union", keep_na=True):
         all_array = all(
             isinstance(matrix, np.ndarray) for matrix in matrix_collection.values()
         )
@@ -321,6 +321,11 @@ class MuVI(PyroModule):
             ].copy()
             for i, k in enumerate(key_list)
         }
+
+        if not keep_na:
+            merged_matrix_collection = {
+                k: v.fillna(0) for k, v in merged_matrix_collection.items()
+            }
 
         if all_array:
             merged_matrix_collection = {
@@ -520,7 +525,7 @@ class MuVI(PyroModule):
         if isinstance(masks, list):
             masks = {self.view_names[m]: mask for m, mask in enumerate(masks)}
 
-        masks = self._merge(masks)
+        masks = self._merge(masks, keep_na=False)
 
         informed_views = []
         for vn in self.view_names:

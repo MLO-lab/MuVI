@@ -91,12 +91,12 @@ See [this vignette](https://raw.githack.com/MLO-lab/MuVI/master/examples/4_singl
 
 ## Installation
 
-We suggest using [conda](https://docs.conda.io/en/latest/miniconda.html) to manage your environments, and [pip](https://pypi.org/project/pip/) to install `muvi` as a python package. Follow these steps to get `muvi` up and running!
+We suggest using [conda](https://conda-forge.org/download/) to manage your environments, and [pip](https://pypi.org/project/pip/) to install `muvi` as a python package. Follow these steps to get `muvi` up and running!
 
 1. Create a python environment in `conda`:
 
 ```bash
-conda create -n muvi python=3.9
+conda create -n muvi python=3.10
 ```
 
 2. Activate freshly created environment:

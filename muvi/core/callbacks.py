@@ -1,4 +1,5 @@
 """Collection of training callbacks."""
+
 from collections import defaultdict
 from typing import Callable
 from typing import Optional

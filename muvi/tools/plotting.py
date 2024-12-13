@@ -1224,13 +1224,19 @@ def scatter_rank(model, groups=None, **kwargs):
             "No group-wise ranking found, run `muvi.tl.rank first.`"
         ) from e
     group_df = sc.get.rank_genes_groups_df(factor_adata, group=groups)
+    if groups is not None and len(groups) == 1:
+        group_df["group"] = groups[0]
     group_df["scores_abs"] = group_df["scores"].abs()
+
+    scores_key = "scores_abs"
+    if any(model.nmf.values()):
+        scores_key = "scores"
 
     relevant_factors_dict = {}
     for group in group_df["group"].unique():
         relevant_factors_dict[group] = (
             group_df[group_df["group"] == group]
-            .sort_values("scores_abs", ascending=False)
+            .sort_values(scores_key, ascending=False)
             .iloc[:2]["names"]
             .tolist()
         )
@@ -1266,13 +1272,19 @@ def groupplot_rank(model, groups=None, pl_type=STRIPPLOT, top=1, **kwargs):
             "No group-wise ranking found, run `muvi.tl.rank first.`"
         ) from e
     group_df = sc.get.rank_genes_groups_df(factor_adata, group=groups)
+    if groups is not None and len(groups) == 1:
+        group_df["group"] = groups[0]
     group_df["scores_abs"] = group_df["scores"].abs()
+
+    scores_key = "scores_abs"
+    if any(model.nmf.values()):
+        scores_key = "scores"
 
     relevant_factors = []
     for group in group_df["group"].unique():
         rfs = (
             group_df[group_df["group"] == group]
-            .sort_values("scores_abs", ascending=False)
+            .sort_values(scores_key, ascending=False)
             .iloc[:top]["names"]
         )
         for rf in rfs:

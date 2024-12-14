@@ -17,6 +17,7 @@ import torch
 
 from kneed import KneeLocator
 from scipy.optimize import linprog
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import root_mean_squared_error
 from statsmodels.stats import multitest
 from tqdm import tqdm
@@ -742,6 +743,52 @@ def test(
         ]
     return results
 
+
+def regress_out(
+    model, factor_idx: Index, view_idx: Index = "all", use_obs: bool = True
+) -> dict[str, pd.DataFrame]:
+    """Regress out unwanted variation modelled by a set of factors.
+
+    Parameters
+    ----------
+    model : MuVI
+        A MuVI model
+    factor_idx : Index, optional
+        Factor index, by default "all"
+    view_idx : Index, optional
+        View index, by default "all"
+    use_obs : bool, optional
+        Whether to use the observed data or the reconstructed data, by default True
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Corrected data
+
+    """
+
+    factor_idx = _normalize_index(factor_idx, model.factor_names, as_idx=False)
+    if len(factor_idx) == 0:
+        raise ValueError("`factor_idx` is empty.")
+    view_idx = _normalize_index(view_idx, model.view_names, as_idx=False)
+
+    zs = model.get_factor_scores(factor_idx=factor_idx, as_df=True)
+    if use_obs:
+        ys = model.get_imputed(view_idx, as_df=True)
+    else:
+        ys = model.get_reconstructed(view_idx, as_df=True)
+
+    ys_corrected = {}
+    for view_name, view_obs in ys.items():
+        ys_corrected[view_name] = view_obs.copy()
+        for feature_name in ys[view_name].columns:
+            lr = LinearRegression()
+            lr_ys = view_obs.loc[:, feature_name]
+            lr.fit(zs, lr_ys)
+            ys_corrected[view_name].loc[:, feature_name] = lr_ys - lr.predict(
+                zs
+            ).astype(np.float32)
+    return ys_corrected
 
 def invert_permutation(p):
     p = np.asanyarray(p)

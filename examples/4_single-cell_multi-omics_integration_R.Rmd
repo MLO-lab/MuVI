@@ -183,12 +183,10 @@ plot_factor(muvi,
 Similar to the principal components of a PCA decomposition, `MuVI` infers a compact latent space governed by domain knowledge in terms of feature (gene) sets. Therefore, we may apply clustering algorithms that learn non-linear manifolds such as t-SNE or UMAP. Here, we apply UMAP and further compress the latent space into two dimensions for better visualisation.
 
 ```{r message=FALSE}
-factors <- 1:20
 
 muvi <- run_umap(muvi,
-                 factors = factors,
                  n_neighbors = 15,
-                 min_dist = 0.30)
+                 min_dist = 0.50)
 
 plot_dimred(
   muvi,

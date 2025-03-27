@@ -47,6 +47,7 @@ class MuVI(PyroModule):
         self,
         observations: MultiView,
         prior_masks: Optional[MultiView] = None,
+        condition_covs: Optional[SingleView] = None,
         covariates: Optional[SingleView] = None,
         prior_confidence: Optional[Union[float, str]] = "low",
         n_factors: Optional[int] = None,
@@ -105,6 +106,8 @@ class MuVI(PyroModule):
         self.prior_masks, self.prior_scales = self._setup_prior_masks(
             prior_masks, n_factors
         )
+        self.condition_covs = condition_covs
+        self.n_conditions = self.condition_covs.shape[1] if self.condition_covs is not None else 0
         self.covariates = self._setup_covariates(covariates)
         self.likelihoods = self._setup_likelihoods(likelihoods)
         self.nmf = self._setup_nmf(nmf)
@@ -1274,7 +1277,9 @@ class MuVI(PyroModule):
                 self.n_samples,
                 n_features=[self.n_features[vn] for vn in self.view_names],
                 n_factors=self.n_factors,
+                n_dense_factors=self.n_dense_factors,
                 prior_scales=prior_scales,
+                n_conditions=self.n_conditions,
                 n_covariates=self.n_covariates,
                 likelihoods=[self.likelihoods[vn] for vn in self.view_names],
                 reg_hs=self.reg_hs,
@@ -1380,6 +1385,10 @@ class MuVI(PyroModule):
         # replace all nans with zeros
         # self.presence mask takes care of gradient updates
         train_obs = torch.nan_to_num(train_obs)
+        
+        condition_covs = None
+        if self.condition_covs is not None:
+            condition_covs = torch.Tensor(self.condition_covs)
 
         train_covs = None
         if self.covariates is not None:
@@ -1389,6 +1398,7 @@ class MuVI(PyroModule):
         training_data = {
             "obs": train_obs,
             "mask": mask_obs,
+            "condition_covs": condition_covs,
             "covs": train_covs,
         }
         return {k: v for k, v in training_data.items() if v is not None}
@@ -1570,7 +1580,9 @@ class MuVIModel(PyroModule):
         n_samples: int,
         n_features: list[int],
         n_factors: int,
+        n_dense_factors: int,
         prior_scales: Optional[list[torch.Tensor]],
+        n_conditions: int,
         n_covariates: int,
         likelihoods: list[str],
         global_prior_scale: float = 1.0,
@@ -1617,6 +1629,8 @@ class MuVIModel(PyroModule):
         self.feature_offsets = [0, *np.cumsum(self.n_features).tolist()]
         self.n_views = len(self.n_features)
         self.n_factors = n_factors
+        self.n_dense_factors = n_dense_factors
+        self.n_conditions = n_conditions
         self.prior_scales = prior_scales
         if self.prior_scales is not None:
             self.prior_scales = torch.cat(self.prior_scales, 1).to(device)
@@ -1665,6 +1679,16 @@ class MuVIModel(PyroModule):
                 "size": self.n_factors,
                 "dim": -2,
             },
+            "condition": {
+                "name": "condition",
+                "size": self.n_conditions,
+                "dim": -2,
+            },
+            "factor_right": {
+                "name": "factor_right",
+                "size": self.n_factors,
+                "dim": -1,
+            },
             "sample": {"name": "sample", "size": self.n_samples, "dim": -2},
             "covariate": {"name": "covariate", "size": self.n_covariates, "dim": -2},
         }
@@ -1687,6 +1711,7 @@ class MuVIModel(PyroModule):
         sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
+        condition_covs: Optional[torch.Tensor] = None,
         covs: Optional[torch.Tensor] = None,
     ):
         """Generate samples.
@@ -1711,6 +1736,10 @@ class MuVIModel(PyroModule):
         view_plate = self.get_plate("view")
         factor_l_plate = self.get_plate("factor_left")
         feature_plates = [self.get_plate(f"feature_{m}") for m in range(self.n_views)]
+        
+        factor_r_plate = self.get_plate("factor_right")
+        condition_plate = self.get_plate("condition")
+        
         sample_plate = self.get_plate("sample", subsample=sample_idx)
 
         if self.n_covariates > 0:
@@ -1790,12 +1819,29 @@ class MuVIModel(PyroModule):
                     f"sigma_{m}",
                     dist.LogNormal(self._zeros((1,)), self._ones((1,))),
                 )
+                
+        if self.n_conditions > 0:
+            with condition_plate:
+                with factor_r_plate:
+                    output_dict["w_condition"] = pyro.sample(
+                        "w_condition",
+                        dist.Laplace(self._zeros((1,)), self._ones((1,))),
+                    )
 
         with sample_plate:
+            if self.n_conditions > 0:
+                condition_covs = pyro.deterministic("condition_covs", condition_covs)
+                z_loc = torch.matmul(condition_covs, output_dict["w_condition"])
+                if self.n_dense_factors > 0:
+                    # print(z_loc.shape)
+                    # print(z_loc[:, -self.n_dense_factors:].shape)
+                    z_loc[:, -self.n_dense_factors:] = self._zeros((self.n_dense_factors,))
+            else:
+                z_loc = self._zeros((self.n_factors,)),
             output_dict["z"] = pyro.sample(
                 "z",
                 dist.Normal(
-                    self._zeros((self.n_factors,)),
+                    z_loc,
                     self._ones((self.n_factors,)),
                 ),
             )
@@ -1888,12 +1934,13 @@ class MuVIGuide(PyroModule):
         n_covariates = self.model.n_covariates
 
         site_to_shape = {
+            "w_condition": (self.model.n_conditions, n_factors),
             "z": (n_samples, n_factors),
             "view_scale": (n_views,),
             "factor_scale": (n_factors, n_views),
         }
 
-        normal_sites = ["z"]
+        normal_sites = ["w_condition", "z"]
         for m in range(n_views):
             site_to_shape[f"local_scale_{m}"] = (n_factors, n_features[m])
             site_to_shape[f"caux_{m}"] = (n_factors, n_features[m])
@@ -1907,6 +1954,7 @@ class MuVIGuide(PyroModule):
         site_to_dist = {
             k: "Normal" if k in normal_sites else "LogNormal" for k in site_to_shape
         }
+        site_to_dist["w_condition"] = "Laplace"
 
         for name, shape in site_to_shape.items():
             deep_setattr(
@@ -2009,6 +2057,8 @@ class MuVIGuide(PyroModule):
         if index is not None:
             loc = loc.index_select(0, index)
             scale = scale.index_select(0, index)
+        if self.site_to_dist[name] == "Laplace":
+            return pyro.sample(name, dist.Laplace(loc, scale))
         if self.site_to_dist[name] == "LogNormal":
             return pyro.sample(name, dist.LogNormal(loc, scale))
         if self.site_to_dist[name] == "Dirichlet":
@@ -2020,6 +2070,7 @@ class MuVIGuide(PyroModule):
         sample_idx: torch.Tensor,
         obs: torch.Tensor,
         mask: torch.Tensor,
+        condition_covs: Optional[torch.Tensor] = None,
         covs: Optional[torch.Tensor] = None,
     ):
         """Approximate posterior."""
@@ -2030,6 +2081,10 @@ class MuVIGuide(PyroModule):
         feature_plates = [
             self.model.get_plate(f"feature_{m}") for m in range(self.model.n_views)
         ]
+        
+        factor_r_plate = self.model.get_plate("factor_right")
+        condition_plate = self.model.get_plate("condition")
+        
         sample_plate = self.model.get_plate("sample", subsample=sample_idx)
 
         if self.model.n_covariates > 0:
@@ -2053,6 +2108,12 @@ class MuVIGuide(PyroModule):
                         output_dict[f"beta_{m}"] = self._sample(f"beta_{m}")
 
                 output_dict[f"sigma_{m}"] = self._sample(f"sigma_{m}")
+        
+        
+        if self.model.n_conditions > 0:
+            with condition_plate:
+                with factor_r_plate:
+                    output_dict["w_condition"] = self._sample("w_condition")
 
         with sample_plate as indices:
             output_dict["z"] = self._sample("z", indices)

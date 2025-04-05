@@ -540,7 +540,7 @@ def inspect_factor(
                 labeled_data["is_positive"] = labeled_data[loading_col] > 0
 
                 n_positive = labeled_data["is_positive"].sum()
-                n_negative = top - n_positive
+                n_negative = min(top, len(labeled_data)) - n_positive
                 num = max(n_positive, n_negative)
 
                 labeled_data["x_arrow_pos"] = labeled_data[rank_col] + 0.02 * x_range

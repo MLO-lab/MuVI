@@ -434,6 +434,7 @@ def _test_single_view(
     model,
     view_idx: Union[str, int] = 0,
     factor_idx: Index = "all",
+    subsample: int = 0,
     feature_sets: pd.DataFrame = None,
     sign: str = "all",
     corr_adjust: bool = True,
@@ -451,6 +452,8 @@ def _test_single_view(
         Single view index
     factor_idx : Index, optional
         Factor index, by default "all"
+    subsample : int, optional
+        Number of samples to estimate PCGSE, by default 0 (all samples)
     feature_sets : pd.DataFrame, optional
         Boolean dataframe with feature sets in each row, by default None
     sign : str, optional
@@ -495,6 +498,9 @@ def _test_single_view(
     if sign not in allowed_signs:
         raise ValueError(f"sign `{sign}` must be one of `{', '.join(allowed_signs)}`.")
 
+    if model.nmf[view_idx] and sign == "neg":
+        raise ValueError("Cannot test negative weights for nonnegative views.")
+
     if use_prior_mask:
         logger.warning(
             f"No feature sets provided for `{view_idx}`, "
@@ -538,9 +544,13 @@ def _test_single_view(
             "Empty `feature_sets` after feature intersection with the observations."
         )
 
-    y = model.get_observations(view_idx, feature_idx=feature_intersection, as_df=True)[
-        view_idx
-    ]
+    sample_idx = "all"
+    if subsample is not None and subsample > 0 and subsample < len(sample_idx):
+        sample_idx = np.random.choice(sample_idx, subsample, replace=False)
+
+    y = model.get_observations(
+        view_idx, sample_idx=sample_idx, feature_idx=feature_intersection, as_df=True
+    )[view_idx]
     factor_loadings = model.get_factor_loadings(
         view_idx, factor_idx=factor_idx, feature_idx=feature_intersection, as_df=True
     )[view_idx]
@@ -628,6 +638,7 @@ def test(
     model,
     view_idx: Index = "all",
     factor_idx: Index = "all",
+    subsample: int = 0,
     feature_sets: pd.DataFrame = None,
     sign: Optional[str] = None,
     corr_adjust: bool = True,
@@ -646,6 +657,8 @@ def test(
         View index, by default "all"
     factor_idx : Index, optional
         Factor index, by default "all"
+    subsample : int, optional
+        Number of samples to estimate PCGSE, by default 0 (all samples)
     feature_sets : pd.DataFrame, optional
         Boolean dataframe with feature sets in each row, by default None
     sign : str, optional
@@ -696,6 +709,7 @@ def test(
                     model,
                     view_idx=view_idx,
                     factor_idx=factor_idx,
+                    subsample=subsample,
                     feature_sets=feature_sets,
                     sign=sign,
                     corr_adjust=corr_adjust,
@@ -789,6 +803,7 @@ def regress_out(
                 zs
             ).astype(np.float32)
     return ys_corrected
+
 
 def invert_permutation(p):
     p = np.asanyarray(p)

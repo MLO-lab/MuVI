@@ -1077,8 +1077,7 @@ class CPUUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == "torch.storage" and name == "_load_from_bytes":
             return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
-        else:
-            return super().find_class(module, name)
+        return super().find_class(module, name)
 
 
 def save(model, dir_path="."):
@@ -1155,7 +1154,6 @@ def load(dir_path=".", with_params=True, map_location=None):
         model._cache.cov_adata = cov_adata
     if with_params:
         pyro.get_param_store().load(params_path, map_location=map_location)
-    # model = pyro.module("MuVI", model, update_module_params=True)  # noqa: ERA001
     return model
 
 

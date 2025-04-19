@@ -10,7 +10,6 @@ import dill as pickle
 import mudata as md
 import numpy as np
 import pandas as pd
-import pyro
 import scanpy as sc
 import scipy
 import torch
@@ -1076,16 +1075,19 @@ def to_mdata(
 class CPUUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == "torch.storage" and name == "_load_from_bytes":
-            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+            return lambda b: torch.load(
+                io.BytesIO(b),
+                map_location="cpu",
+                weights_only=False,
+            )
         return super().find_class(module, name)
 
 
 def save(model, dir_path="."):
     model_path = Path(dir_path) / "model.pkl"
-    params_path = Path(dir_path) / "params.save"
     factor_adata_path = Path(dir_path) / "factor.h5ad"
     cov_adata_path = Path(dir_path) / "cov.h5ad"
-    for pth in [model_path, params_path, factor_adata_path, cov_adata_path]:
+    for pth in [model_path, factor_adata_path, cov_adata_path]:
         if pth.exists():
             logger.warning(f"`{pth}` already exists, overwriting.")
 
@@ -1127,14 +1129,12 @@ def save(model, dir_path="."):
     finally:
         if model._cache is not None:
             model._cache.cov_adata = cov_adata
-
-    pyro.get_param_store().save(params_path)
     return dir_path
 
 
-def load(dir_path=".", with_params=True, map_location=None):
+def load(dir_path=".", map_location=None):
     model_path = Path(dir_path) / "model.pkl"
-    params_path = Path(dir_path) / "params.save"
+    Path(dir_path) / "params.save"
     factor_adata_path = Path(dir_path) / "factor.h5ad"
     cov_adata_path = Path(dir_path) / "cov.h5ad"
 
@@ -1152,8 +1152,6 @@ def load(dir_path=".", with_params=True, map_location=None):
 
         model._cache.factor_adata = factor_adata
         model._cache.cov_adata = cov_adata
-    if with_params:
-        pyro.get_param_store().load(params_path, map_location=map_location)
     return model
 
 

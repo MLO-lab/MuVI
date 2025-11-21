@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "muvi"
-version = "0.2.1"
+version = "0.2.2"
 description = "MuVI: A multi-view latent variable model with domain-informed structured sparsity for integrating noisy feature sets."
 readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]

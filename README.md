@@ -114,7 +114,7 @@ We suggest using [conda](https://conda-forge.org/download/) to manage your envir
 1. Create a python environment in `conda`:
 
 ```bash
-conda create -n muvi python=3.10
+conda create -n muvi python=3.12
 ```
 
 2. Activate freshly created environment:

@@ -1,5 +1,7 @@
 import logging
 import time
+import json
+from pathlib import Path
 
 from importlib.metadata import version
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+import anndata as ad
 import pyro
 import pyro.distributions as dist
 import torch
@@ -29,7 +32,6 @@ from tqdm import tqdm
 from muvi.core.early_stopping import EarlyStoppingCallback
 from muvi.core.index import _make_index_unique
 from muvi.core.index import _normalize_index
-
 
 logger = logging.getLogger(__name__)
 
@@ -316,9 +318,11 @@ class MuVI(PyroModule):
             )
 
         merged_matrix_collection = {
-            k: merged_matrix_collection.iloc[
-                :, index_offsets[i] : index_offsets[i + 1]
-            ].copy()
+            k: (
+                merged_matrix_collection.iloc[
+                    :, index_offsets[i] : index_offsets[i + 1]
+                ].copy()
+            )
             for i, k in enumerate(key_list)
         }
 
@@ -519,6 +523,7 @@ class MuVI(PyroModule):
             self.n_dense_factors = n_factors
             # TODO: duplicate line...see below
             self._factor_names = pd.Index([f"factor_{k}" for k in range(n_factors)])
+            self.informed_views = []
             return None, None
 
         # if list convert to dict
@@ -1563,6 +1568,311 @@ class MuVI(PyroModule):
         self._reset_factors()
         self._compute_factor_signs()
 
+    def get_state(self):
+        """Get the current state of the model.
+
+        Returns
+        -------
+        tuple
+            A tuple containing metadata, params, and structure.
+        """
+
+        # ------------------------------
+        # A) METADATA (JSON-safe)
+        # ------------------------------
+        metadata = dict(
+            state_version="1.0.0",
+            muvi_version=self._version,
+            view_names=list(self.view_names),
+            feature_names={vn: list(fns) for vn, fns in self.feature_names.items()},
+            sample_names=list(self.sample_names),
+            factor_names=list(self.factor_names),
+            covariate_names=(
+                list(self.covariate_names) if self.covariate_names is not None else None
+            ),
+            n_factors=self.n_factors,
+            n_dense_factors=self.n_dense_factors,
+            n_covariates=self.n_covariates,
+            informed_views=(
+                list(self.informed_views) if hasattr(self, "informed_views") else None
+            ),
+            likelihoods=self.likelihoods,
+            nmf=self.nmf,
+            reg_hs=self.reg_hs,
+            # store this as a string ("relu"/"softplus"/None)
+            pos_transform=self.pos_transform,
+            prior_confidence=self.prior_confidence,
+            normalize=self.normalize,
+            _informed=self._informed,
+            _old_factor_names=list(self._old_factor_names),
+            _built=self._built,
+            _trained=self._trained,
+            _training_log=self._training_log,
+        )
+
+        # ------------------------------
+        # B) GUIDE PARAMS
+        # ------------------------------
+        params: dict[str, np.ndarray] = {}
+        if self._trained:
+            for name, loc_param in self._guide.locs.named_parameters():
+                params[f"loc::{name}"] = loc_param.detach().cpu().numpy()
+            for name, scale_param in self._guide.scales.named_parameters():
+                params[f"scale::{name}"] = scale_param.detach().cpu().numpy()
+
+        # ------------------------------
+        # C) STRUCTURE
+        # ------------------------------
+        structure = dict(
+            observations=self.observations,  # dict[str, np.ndarray]
+            prior_masks=self.prior_masks,  # dict[str, np.ndarray] or None
+            prior_scales=self.prior_scales,  # dict[str, np.ndarray] or None
+            covariates=self.covariates,  # np.ndarray or None
+            factor_order=self.factor_order.astype(np.int64),
+            factor_signs=self.factor_signs.astype(np.float32),
+        )
+
+        return metadata, params, structure
+
+    def set_state(self, metadata, params, structure):
+        """Restore MuVI internal state from metadata + params + structure.
+
+        Parameters
+        ----------
+        metadata : dict
+            Metadata information about the model.
+        params : dict
+            Model parameters (weights and biases).
+        structure : dict
+            Model structure information.
+        """
+
+        # ------------------------
+        # A) Restore metadata
+        # ------------------------
+        self.view_names = pd.Index(metadata["view_names"])
+        self.sample_names = pd.Index(metadata["sample_names"])
+        self.feature_names = {
+            vn: pd.Index(fns) for vn, fns in metadata["feature_names"].items()
+        }
+
+        # Factor names via setter -> updates _factor_names internally
+        self.factor_names = pd.Index(metadata["factor_names"])
+        self._old_factor_names = pd.Index(metadata["_old_factor_names"])
+
+        covnames = metadata["covariate_names"]
+        self.covariate_names = None if covnames is None else pd.Index(covnames)
+
+        self.n_views = len(self.view_names)
+        self.n_samples = len(self.sample_names)
+        self.n_features = {vn: len(fns) for vn, fns in self.feature_names.items()}
+
+        self.n_factors = metadata["n_factors"]
+        self.n_dense_factors = metadata["n_dense_factors"]
+        self.n_covariates = metadata["n_covariates"]
+        self.informed_views = metadata["informed_views"]
+
+        self.likelihoods = metadata["likelihoods"]
+        self.nmf = metadata["nmf"]
+        self.reg_hs = metadata["reg_hs"]
+        self.prior_confidence = metadata["prior_confidence"]
+
+        # pos_transform is stored as string or None
+        self.pos_transform = metadata["pos_transform"]
+
+        # DO NOT re-normalize on load
+        self.normalize = metadata["normalize"]
+        self._informed = metadata["_informed"]
+        self._built = metadata["_built"]
+        self._trained = metadata["_trained"]
+        self._training_log = metadata["_training_log"]
+
+        # ------------------------
+        # B) Restore structure
+        # ------------------------
+        self.observations = structure["observations"]
+        self.prior_masks = structure["prior_masks"]
+        self.prior_scales = structure["prior_scales"]
+        self.covariates = structure["covariates"]
+
+        self._factor_order = structure["factor_order"]
+        self._factor_signs = structure["factor_signs"]
+
+        # n_samples from observations
+        self.n_samples = next(iter(self.observations.values())).shape[0]
+
+        # ------------------------
+        # C) Rebuild model & guide
+        # ------------------------
+        self._model = MuVIModel(
+            n_samples=self.n_samples,
+            n_features=[self.n_features[vn] for vn in self.view_names],
+            n_factors=self.n_factors,
+            prior_scales=None,  # training priors not needed for inference
+            n_covariates=self.n_covariates,
+            likelihoods=[self.likelihoods[vn] for vn in self.view_names],
+            reg_hs=self.reg_hs,
+            nmf=[self.nmf[vn] for vn in self.view_names],
+            pos_transform=self.pos_transform,  # string ("relu"/"softplus"/None)
+            device=self.device,
+        )
+
+        self._guide = MuVIGuide(self._model)
+
+        # ------------------------
+        # D) Load guide parameters
+        # ------------------------
+        for key, arr in params.items():
+            prefix, name = key.split("::", 1)
+            tensor = torch.from_numpy(arr)
+
+            if prefix == "loc":
+                deep_setattr(self._guide.locs, name, torch.nn.Parameter(tensor))
+            elif prefix == "scale":
+                deep_setattr(self._guide.scales, name, torch.nn.Parameter(tensor))
+
+    def save(self, directory: str):
+        """Save the current state of the model to disk.
+
+        Parameters
+        ----------
+        directory : str
+            The directory where the model state should be saved.
+
+        Returns
+        -------
+        str
+            The path to the saved model directory.
+        """
+
+        directory = Path(directory)
+        directory.mkdir(exist_ok=True, parents=True)
+
+        metadata, params, structure = self.get_state()
+
+        # Save metadata.json
+        with open(directory / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        # Save params (each loc::*, scale::* as separate array)
+        np.savez_compressed(directory / "params.npz", **params)
+
+        # Save structural data as a single pickled dict under key "structure"
+        np.savez_compressed(directory / "structure.npz", structure=structure)
+
+        # Save cached AnnData if present
+        if self._cache is not None:
+            if getattr(self._cache, "factor_adata", None) is not None:
+                self._cache.factor_adata.write_h5ad(directory / "factor.h5ad")
+            if getattr(self._cache, "cov_adata", None) is not None:
+                self._cache.cov_adata.write_h5ad(directory / "cov.h5ad")
+
+        return str(directory)
+
+    @classmethod
+    def load(cls, directory: str, map_location="cpu"):
+        """Load a MuVI model from disk.
+
+        Parameters
+        ----------
+        directory : str
+            The directory where the model state is saved.
+        map_location : str, optional
+            The location to map the model parameters, by default "cpu"
+
+        Returns
+        -------
+        MuVI
+            The loaded MuVI model.
+        """
+
+        directory = Path(directory)
+
+        # ------------------------
+        # A) Load metadata & params
+        # ------------------------
+        with open(directory / "metadata.json", "r") as f:
+            metadata = json.load(f)
+
+        params_raw = np.load(directory / "params.npz")
+        params = {k: params_raw[k] for k in params_raw.files}
+
+        # ------------------------
+        # B) Load structure (single pickled dict)
+        # ------------------------
+        raw_struct = np.load(directory / "structure.npz", allow_pickle=True)
+        structure = raw_struct[
+            "structure"
+        ].item()  # <- ndarray(0d, dtype=object) → dict
+
+        # ------------------------
+        # C) Build stub MuVI object WITHOUT normalization
+        # ------------------------
+        placeholder_obs = {
+            vn: np.zeros(
+                (len(metadata["sample_names"]), len(metadata["feature_names"][vn])),
+                dtype=np.float32,
+            )
+            for vn in metadata["view_names"]
+        }
+
+        placeholder_covs = (
+            np.zeros(
+                (len(metadata["sample_names"]), metadata["n_covariates"]),
+                dtype=np.float32,
+            )
+            if metadata["n_covariates"] > 0
+            else None
+        )
+
+        model = cls(
+            observations=placeholder_obs,
+            prior_masks=None,
+            covariates=placeholder_covs,
+            n_factors=metadata["n_factors"],
+            view_names=metadata["view_names"],
+            likelihoods=metadata["likelihoods"],
+            nmf=metadata["nmf"],
+            reg_hs=metadata["reg_hs"],
+            pos_transform=metadata["pos_transform"],
+            prior_confidence=metadata["prior_confidence"],
+            normalize=False,  # prevent _normalize_observations on load
+            device=map_location,
+        )
+
+        # ------------------------
+        # D) Inject full state
+        # ------------------------
+        model.set_state(metadata, params, structure)
+
+        # ------------------------
+        # E) Restore AnnData cache if it exists AND cache object is present
+        # ------------------------
+        factor_path = directory / "factor.h5ad"
+        cov_path = directory / "cov.h5ad"
+
+        factor_exists = factor_path.exists()
+        cov_exists = cov_path.exists()
+
+        if factor_exists or cov_exists:
+            # Lazy import to avoid circular dependency
+            from importlib import import_module
+
+            Cache = import_module("muvi.tools.cache").Cache
+
+            # Initialize cache
+            model._cache = Cache(model)
+
+            if factor_exists:
+                model._cache.factor_adata = ad.read_h5ad(factor_path)
+
+            if cov_exists:
+                model._cache.cov_adata = ad.read_h5ad(cov_path)
+
+        else:
+            model._cache = None
+        return model
+
 
 class MuVIModel(PyroModule):
     def __init__(
@@ -1640,9 +1950,9 @@ class MuVIModel(PyroModule):
         self.scale_elbo = scale_elbo
         self.view_scales = np.ones(self.n_views)
         if self.scale_elbo and self.n_views > 1:
-            self.view_scales = (self.n_views / (self.n_views - 1)) * (
-                1.0 - np.array([nf / sum(n_features) for nf in n_features])
-            )
+            raw_weights = np.array([1.0 / np.sqrt(nf) for nf in n_features])
+            self.view_scales = self.n_views * raw_weights / raw_weights.sum()
+
         self.device = device
 
     def get_plate(self, name: str, **kwargs):

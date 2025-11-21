@@ -6,8 +6,15 @@ readme = "README.md"
 authors = ["Arber Qoku <arber.qoku@dkfz-heidelberg.com>"]
 homepage = "https://github.com/MLO-lab/MuVI"
 repository = "https://github.com/MLO-lab/MuVI"
-keywords = ["multi-view", "multi-omics", "feature sets", "latent variable model", "structured sparsity", "variational inference", "single-cell"]
-
+keywords = [
+    "multi-view",
+    "multi-omics",
+    "feature sets",
+    "latent variable model",
+    "structured sparsity",
+    "variational inference",
+    "single-cell"
+]
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
@@ -15,69 +22,81 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-pandas = "^2.2.3"
-scikit-learn = "^1.6.0"
-scipy = "^1.14.1"
-statsmodels = "^0.14.4"
-seaborn = "^0.13.2"
-scanpy = "^1.10.4"
-mudata = "^0.3.1"
-igraph = "^0.11.8"
-leidenalg = "^0.10.2"
-dill = "^0.3.9"
-tqdm = "^4.67.1"
-tabulate = "^0.9.0"
-torch = "^2.6.0"
-pyro-ppl = "^1.9.1"
-tensordict = "^0.6.2"
-kneed = "^0.8.5"
+
+pandas = ">=2.2.3"
+scikit-learn = ">=1.6.0"
+scipy = ">=1.14.1"
+statsmodels = ">=0.14.4"
+seaborn = ">=0.13.2"
+
+# single-cell ecosystem
+scanpy = ">=1.10.4"
+mudata = ">=0.3.1"
+
+# graph libraries
+igraph = ">=0.11.8"
+leidenalg = ">=0.10.2"
+
+# misc
+dill = ">=0.3.9"
+tqdm = ">=4.67.1"
+tabulate = ">=0.9.0"
+kneed = ">=0.8.5"
+
+# DL / VI stack
+torch = ">=2.6.0"
+pyro-ppl = ">=1.9.1"
+tensordict = ">=0.6.2"
 
 [tool.poetry.group.dev.dependencies]
-pre-commit = "2.20.0"
-jupyter = "^1.0.0"
-ipython = "^8.10.0"
-twine = "^5.1.0"
+pre-commit = ">=2.20.0"
+jupyter = ">=1.0.0"
+ipython = ">=8.10.0"
+twine = ">=5.1.0"
 
 [tool.poetry.group.test.dependencies]
-pytest = "^7.4.2"
-pytest-cov = "^4.0"
+pytest = ">=7.4.2"
+pytest-cov = ">=4.0"
 
 [tool.poetry.group.lint.dependencies]
-black = {extras = ["jupyter"], version = "^24.4.2"}
-flake8 = "^6.0.0"
-isort = "^5.12.0"
+black = { extras = ["jupyter"], version = ">=24.4.2" }
+flake8 = ">=6.0.0"
+isort = ">=5.12.0"
 mypy = ">=1.6.0"
+ruff = ">=0.5.0"
 
-
+# -------------------------
+# RUFF CONFIGURATION
+# -------------------------
 [tool.ruff]
 fix = true
-unfixable = [
-    "ERA", # do not autoremove commented out code
-]
-target-version = "py39"
+target-version = "py310"   # match the project's Python requirement
 line-length = 88
+
 extend-select = [
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "ERA", # flake8-eradicate/eradicate
-    "I",   # isort
-    "N",   # pep8-naming
-    "PIE", # flake8-pie
-    "PGH", # pygrep
-    "RUF", # ruff checks
-    "SIM", # flake8-simplify
-    "TCH", # flake8-type-checking
-    "TID", # flake8-tidy-imports
-    "UP",  # pyupgrade
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "ERA",   # eradicate
+    "I",     # isort
+    "N",     # pep8-naming
+    "PIE",   # flake8-pie
+    "PGH",   # pygrep-hooks
+    "RUF",   # ruff-specific rules
+    "SIM",   # simplify
+    "TCH",   # type-checking
+    "TID",   # tidy imports
+    "UP"     # pyupgrade
 ]
+
 ignore = [
-    "B904", # use 'raise ... from err'
-    "B905", # use explicit 'strict=' parameter with 'zip()'
-    "N818", #  Exception name should be named with an Error suffix
+    "B904",
+    "B905",
+    "N818"
 ]
+
 extend-exclude = [
     "docs/*",
-    "tests/*",
+    "tests/*"
 ]
 
 [tool.ruff.flake8-tidy-imports]
@@ -89,11 +108,16 @@ lines-between-types = 1
 lines-after-imports = 2
 known-first-party = ["muvi"]
 
+# -------------------------
+# BLACK CONFIGURATION
+# -------------------------
 [tool.black]
-target-version = ["py39"]
+target-version = ["py310"]
 preview = true
 
-
+# -------------------------
+# MYPY CONFIGURATION
+# -------------------------
 [tool.mypy]
 files = "muvi, tests"
 mypy_path = "muvi"
@@ -101,23 +125,25 @@ namespace_packages = true
 explicit_package_bases = true
 show_error_codes = true
 strict = true
+exclude = ["tests"]
+
 enable_error_code = [
     "ignore-without-code",
     "redundant-expr",
-    "truthy-bool",
-]
-exclude = [
-    "tests",
+    "truthy-bool"
 ]
 
+# -------------------------
+# PYTEST
+# -------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-
+# -------------------------
+# COVERAGE
+# -------------------------
 [tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover"
-]
+exclude_lines = ["pragma: no cover"]
 omit = [
     "**/tests/*",
     "**/muvi/tools/plotting.py",

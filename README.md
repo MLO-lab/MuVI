@@ -9,7 +9,7 @@ A multi-view latent variable model with domain-informed structured sparsity, tha
 
 ## Basic usage
 
-The `MuVI` class is the main entry point for loading the data and performing the inference:
+The `MuVI` class is the main entry point for loading the data and performing inference:
 
 ```py
 import numpy as np
@@ -19,48 +19,66 @@ import mudata as md
 import muvi
 
 # Load processed input data (missing values are allowed)
-# Matrix of dimensions n_samples x n_rna_features
-rna_df = pd.read_csv(...)
-# Matrix of dimensions n_samples x n_prot_features
-prot_df = pd.read_csv(...)
+rna_df = pd.read_csv(...)   # shape: n_samples x n_rna_features
+prot_df = pd.read_csv(...)  # shape: n_samples x n_prot_features
 
 # Load prior feature sets, e.g. gene sets
 gene_sets = muvi.fs.from_gmt(...)
-# Binary matrix of dimensions n_gene_sets x n_rna_features
-gene_sets_mask = gene_sets.to_mask(rna_df.columns)
+gene_sets_mask = gene_sets.to_mask(rna_df.columns)  # binary mask
 
 # Create a MuVI object by passing both input data and prior information
 model = muvi.MuVI(
     observations={"rna": rna_df, "prot": prot_df},
     prior_masks={"rna": gene_sets_mask},
-    ...
+    ...,
     device=device,
 )
 
 # Alternatively, create a MuVI model from AnnData (single-view)
 rna_adata = ad.AnnData(rna_df, dtype=np.float32)
-rna_adata.varm['gene_sets_mask'] = gene_sets_mask.T
+rna_adata.varm["gene_sets_mask"] = gene_sets_mask.T
 model = muvi.tl.from_adata(
-    adata, 
-    prior_mask_key="gene_sets_mask", 
-    ..., 
-    device=device
+    rna_adata,
+    prior_mask_key="gene_sets_mask",
+    ...,
+    device=device,
 )
 
 # Alternatively, create a MuVI model from MuData (multi-view)
 mdata = md.MuData({"rna": rna_adata, "prot": prot_adata})
-model = muvi.tl.mdata(
-    mdata, 
-    prior_mask_key="gene_sets_mask", 
-    ..., 
-    device=device
+model = muvi.tl.from_mudata(
+    mdata,
+    prior_mask_key="gene_sets_mask",
+    ...,
+    device=device,
 )
 
-# Fit the model for a given number of training epochs
+# Fit the model
 model.fit(batch_size, n_epochs, ...)
 
 # Continue with the downstream analysis (see below)
 ```
+
+## Saving & loading models
+
+MuVI provides a versioned, pickle-free, lightweight serialization format:
+
+```py
+# Save the model
+model.save("path/to/dir")
+
+# Load the model later
+loaded_model = muvi.MuVI.load("path/to/dir")
+```
+
+The directory contains:
+
+- metadata.json – model metadata (JSON)
+- params.npz – variational guide parameters
+- structure.npz – observations, priors, covariates, factor order & signs
+- factor.h5ad / cov.h5ad – optional cached AnnData objects (if present)
+
+This mechanism is fully reproducible, stable across MuVI versions, and does not rely on Python pickle.
 
 ## Submodules
 

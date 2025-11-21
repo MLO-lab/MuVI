@@ -12,7 +12,6 @@ import pandas as pd
 
 from sklearn.metrics import pairwise_distances
 
-
 logger = logging.getLogger(__name__)
 
 

@@ -7,7 +7,6 @@ import numpy as np
 
 from muvi.tools.utils import variance_explained
 
-
 logger = logging.getLogger(__name__)
 
 

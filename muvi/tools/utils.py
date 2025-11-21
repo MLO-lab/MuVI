@@ -1,4 +1,3 @@
-import io
 import logging
 
 from pathlib import Path
@@ -6,13 +5,11 @@ from typing import Optional
 from typing import Union
 
 import anndata as ad
-import dill as pickle
 import mudata as md
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy
-import torch
 
 from kneed import KneeLocator
 from scipy.optimize import linprog
@@ -25,7 +22,6 @@ from muvi.core.index import _normalize_index
 from muvi.core.models import MuVI
 from muvi.tools import feature_sets as fs
 from muvi.tools.cache import Cache
-
 
 logger = logging.getLogger(__name__)
 
@@ -1070,89 +1066,6 @@ def to_mdata(
         mdata.obsm[covariates_key] = model.get_covariates(as_df=True)
 
     return mdata
-
-
-class CPUUnpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        if module == "torch.storage" and name == "_load_from_bytes":
-            return lambda b: torch.load(
-                io.BytesIO(b),
-                map_location="cpu",
-                weights_only=False,
-            )
-        return super().find_class(module, name)
-
-
-def save(model, dir_path="."):
-    model_path = Path(dir_path) / "model.pkl"
-    factor_adata_path = Path(dir_path) / "factor.h5ad"
-    cov_adata_path = Path(dir_path) / "cov.h5ad"
-    for pth in [model_path, factor_adata_path, cov_adata_path]:
-        if pth.exists():
-            logger.warning(f"`{pth}` already exists, overwriting.")
-
-    Path(dir_path).mkdir(parents=True, exist_ok=True)
-
-    factor_adata = None
-    cov_adata = None
-    # clear cache
-    if model._cache is not None:
-        factor_adata = model._cache.factor_adata
-        cov_adata = model._cache.cov_adata
-        model._cache.factor_adata = None
-        model._cache.cov_adata = None
-    with open(model_path, "wb") as f:
-        pickle.dump(model, f)
-
-    # fixes error of anndata that renames .obsm index
-    for adata in [factor_adata, cov_adata]:
-        if adata is not None:
-            for key in adata.obsm:
-                if isinstance(adata.obsm[key], pd.DataFrame):
-                    adata.obsm[key].index = adata.obs_names.copy()
-
-    # save adata(s) and restore cache
-    try:
-        if factor_adata is not None:
-            factor_adata.write_h5ad(factor_adata_path)
-    except Exception as e:
-        logger.error(e)
-    finally:
-        if model._cache is not None:
-            model._cache.factor_adata = factor_adata
-
-    try:
-        if cov_adata is not None:
-            cov_adata.write_h5ad(cov_adata_path)
-    except Exception as e:
-        logger.error(e)
-    finally:
-        if model._cache is not None:
-            model._cache.cov_adata = cov_adata
-    return dir_path
-
-
-def load(dir_path=".", map_location=None):
-    model_path = Path(dir_path) / "model.pkl"
-    Path(dir_path) / "params.save"
-    factor_adata_path = Path(dir_path) / "factor.h5ad"
-    cov_adata_path = Path(dir_path) / "cov.h5ad"
-
-    with open(model_path, "rb") as f:
-        model = pickle.load(f) if map_location is None else CPUUnpickler(f).load()
-
-    if model._cache is not None:
-        factor_adata = None
-        cov_adata = None
-
-        if factor_adata_path.exists():
-            factor_adata = sc.read_h5ad(factor_adata_path)
-        if cov_adata_path.exists():
-            cov_adata = sc.read_h5ad(cov_adata_path)
-
-        model._cache.factor_adata = factor_adata
-        model._cache.cov_adata = cov_adata
-    return model
 
 
 def optim_perm(matrix):

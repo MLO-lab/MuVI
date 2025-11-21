@@ -17,7 +17,6 @@ import muvi
 
 from muvi.core.index import _normalize_index
 
-
 sns.set_theme()
 sns.set_style("whitegrid")
 
@@ -47,7 +46,9 @@ def savefig_or_show(
     ext: Optional[str] = None,
     save: Union[bool, str, None] = None,
 ):
-    return sc.pl._utils.savefig_or_show(writekey, show, dpi, ext, save)
+    return sc.pl._utils.savefig_or_show(
+        writekey, show=show, dpi=dpi, ext=ext, save=save
+    )
 
 
 def _subset_df(data, groupby, groups, include_rest=True):

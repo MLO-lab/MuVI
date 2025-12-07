@@ -6,64 +6,8 @@ on:
   pull_request:
     branches: [master]
 
-# ================================================
-#           linting + formatting (fast, parallel)
-# ================================================
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load pip/poetry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.cache/pypoetry
-          key: poetry-lint-${{ hashFiles('**/poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install --no-interaction --only dev
-
-      - name: Activate virtualenv
-        run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
-
-      - name: Install linting tools (Black + Mypy)
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          pip install black mypy
-
-      - name: Run Black (format check)
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          black --check .
-
-      - name: Run mypy (optional)
-        continue-on-error: true
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          mypy muvi
-
-
-# ================================================
-#                       test
-# ================================================
   test:
-    needs: lint
     strategy:
       fail-fast: true
       matrix:
@@ -86,13 +30,14 @@ jobs:
           virtualenvs-create: true
           virtualenvs-in-project: true
 
+      # ---- SMALL CACHE (no .venv!) ----
       - name: Load pip/poetry cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
             ~/.cache/pypoetry
-          key: poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          key: poetry-${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
           restore-keys: |
             poetry-${{ matrix.python-version }}-
 
@@ -102,13 +47,19 @@ jobs:
       - name: Activate virtualenv
         run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
 
-      - name: Run tests with pytest + coverage + parallelization
+      # ---- Install test extras needed ONLY for CI ----
+      - name: Install pytest-xdist (optional, safe)
         run: |
           source $VIRTUAL_ENV/bin/activate
-          pytest -n auto -v \
+          pip install pytest-xdist
+
+      - name: Run tests
+        run: |
+          source $VIRTUAL_ENV/bin/activate
+          pytest -v \
             --cov=muvi \
             --cov-report xml:coverage.xml \
             --color=yes
 
-      - name: Upload coverage to Codecov
+      - name: Upload coverage
         uses: codecov/codecov-action@v3

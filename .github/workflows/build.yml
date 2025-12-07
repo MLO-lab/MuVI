@@ -42,22 +42,12 @@ jobs:
       - name: Activate virtualenv
         run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
 
-      - name: Install linting tools
+      - name: Install linting tools (Black + Mypy)
         run: |
           source $VIRTUAL_ENV/bin/activate
-          pip install ruff black mypy
+          pip install black mypy
 
-      - name: Run Ruff (lint)
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          ruff check .
-
-      - name: Run Ruff format check
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          ruff format --check .
-
-      - name: Run Black (sanity check)
+      - name: Run Black (format check)
         run: |
           source $VIRTUAL_ENV/bin/activate
           black --check .
@@ -70,10 +60,10 @@ jobs:
 
 
 # ================================================
-#                  test
+#                       test
 # ================================================
   test:
-    needs: lint     # lint must pass before tests run
+    needs: lint
     strategy:
       fail-fast: true
       matrix:

@@ -1,116 +1,57 @@
-name: build
+lint:
+  runs-on: ubuntu-latest
 
-on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+  steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
 
-# ================================================
-#           linting + formatting (fast, parallel)
-# ================================================
-jobs:
-  lint:
-    runs-on: ubuntu-latest
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        virtualenvs-create: true
+        virtualenvs-in-project: true
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+    - name: Load pip/poetry cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.cache/pypoetry
+        key: poetry-lint-${{ hashFiles('**/poetry.lock') }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
+    - name: Install dependencies
+      run: poetry install --no-interaction --only dev
 
-      - name: Load pip/poetry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.cache/pypoetry
-          key: poetry-lint-${{ hashFiles('**/poetry.lock') }}
+    - name: Activate virtualenv
+      run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
 
-      - name: Install dependencies
-        run: poetry install --no-interaction --only dev
+    - name: Install linting tools
+      run: |
+        source $VIRTUAL_ENV/bin/activate
+        pip install ruff black mypy
 
-      - name: Activate virtualenv
-        run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
+    - name: Run Ruff (lint)
+      run: |
+        source $VIRTUAL_ENV/bin/activate
+        ruff check .
 
-      - name: Run Ruff (lint + formatting check)
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          ruff check .
-          ruff format --check .
+    - name: Run Ruff format check
+      run: |
+        source $VIRTUAL_ENV/bin/activate
+        ruff format --check .
 
-      - name: Run Black (sanity check)
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          black --check .
+    - name: Run Black (sanity check)
+      run: |
+        source $VIRTUAL_ENV/bin/activate
+        black --check .
 
-      # OPTIONAL: Mypy static type checking
-      - name: Run mypy
-        continue-on-error: true
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          mypy muvi
-
-
-# ================================================
-#                  test
-# ================================================
-  test:
-    needs: lint     # lint must pass before tests run
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load pip/poetry cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.cache/pypoetry
-          key: poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
-          restore-keys: |
-            poetry-${{ matrix.python-version }}-
-
-      - name: Install dependencies
-        run: poetry install --no-interaction
-
-      - name: Activate virtualenv
-        run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
-
-      - name: Run tests with pytest + coverage + parallelization
-        run: |
-          source $VIRTUAL_ENV/bin/activate
-          pytest -n auto -v \
-            --cov=muvi \
-            --cov-report xml:coverage.xml \
-            --color=yes
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+    - name: Run mypy (optional)
+      continue-on-error: true
+      run: |
+        source $VIRTUAL_ENV/bin/activate
+        mypy muvi

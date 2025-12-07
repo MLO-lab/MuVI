@@ -2,64 +2,115 @@ name: build
 
 on:
   push:
-      branches: [master]
+    branches: [master]
   pull_request:
-      branches: [master]
+    branches: [master]
 
+# ================================================
+#           linting + formatting (fast, parallel)
+# ================================================
 jobs:
-  test:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ "ubuntu-latest" ]
-        python-version: [ "3.10", "3.11", "3.12" ]
-    runs-on: ${{ matrix.os }}
+  lint:
+    runs-on: ubuntu-latest
+
     steps:
-      #----------------------------------------------
-      #       check-out repo and set-up python
-      #----------------------------------------------
       - name: Check out repository
-        uses: actions/checkout@v3
-      - name: Set up python ${{ matrix.python-version }}
-        id: setup-python
-        uses: actions/setup-python@v4
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      #----------------------------------------------
-      #  -----  install & configure poetry  -----
-      #----------------------------------------------
+          python-version: "3.12"
+
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
           virtualenvs-create: true
           virtualenvs-in-project: true
-      #----------------------------------------------
-      #       load cached venv if cache exists
-      #----------------------------------------------
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v3
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
-      #----------------------------------------------
-      # install dependencies if cache does not exist
-      #----------------------------------------------
-      - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-      #----------------------------------------------
-      # install your root project, if required
-      #----------------------------------------------
-      - name: Install library
-        run: poetry install --no-interaction
-      #----------------------------------------------
-      #    add matrix specifics and run test suite
-      #----------------------------------------------
-      - name: Run tests
-        run: |
-          source $VENV
-          pytest -v --cov-report xml:coverage.xml --cov=muvi --color=yes
 
-      - name: Upload coverage
+      - name: Load pip/poetry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/pypoetry
+          key: poetry-lint-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --only dev
+
+      - name: Activate virtualenv
+        run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
+
+      - name: Run Ruff (lint + formatting check)
+        run: |
+          source $VIRTUAL_ENV/bin/activate
+          ruff check .
+          ruff format --check .
+
+      - name: Run Black (sanity check)
+        run: |
+          source $VIRTUAL_ENV/bin/activate
+          black --check .
+
+      # OPTIONAL: Mypy static type checking
+      - name: Run mypy
+        continue-on-error: true
+        run: |
+          source $VIRTUAL_ENV/bin/activate
+          mypy muvi
+
+
+# ================================================
+#                  test
+# ================================================
+  test:
+    needs: lint     # lint must pass before tests run
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load pip/poetry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/pypoetry
+          key: poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            poetry-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Activate virtualenv
+        run: echo "VIRTUAL_ENV=$(poetry env info --path)" >> $GITHUB_ENV
+
+      - name: Run tests with pytest + coverage + parallelization
+        run: |
+          source $VIRTUAL_ENV/bin/activate
+          pytest -n auto -v \
+            --cov=muvi \
+            --cov-report xml:coverage.xml \
+            --color=yes
+
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3

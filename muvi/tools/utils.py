@@ -1050,7 +1050,8 @@ def to_mdata(
     adata_dict = {}
     for vn in model.view_names:
         adata = ad.AnnData(
-            obs_dict[vn], varm={loadings_key: loadings_dict[vn].T}, dtype=np.float32
+            obs_dict[vn].astype(np.float32),
+            varm={loadings_key: loadings_dict[vn].T},
         )
         if betas_dict:
             adata.varm[betas_key] = betas_dict[vn].T

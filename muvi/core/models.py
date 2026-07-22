@@ -473,7 +473,7 @@ class MuVI(PyroModule):
         # keep only numpy arrays, convert to np.float32 dtypes
         return {
             vn: (
-                obs.to_numpy(dtype=np.float32)
+                obs.to_numpy(dtype=np.float32, copy=True)
                 if isinstance(obs, pd.DataFrame)
                 else np.array(obs, dtype=np.float32)
             )

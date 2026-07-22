@@ -588,8 +588,7 @@ class DataGenerator:
         ad_dict = {}
         for m in range(self.n_views):
             adata = ad.AnnData(
-                self.ys[m],
-                dtype=np.float32,
+                self.ys[m].astype(np.float32),
             )
             adata.var_names = f"feature_group_{m}:" + adata.var_names
             adata.varm["w"] = self.ws[m].T
